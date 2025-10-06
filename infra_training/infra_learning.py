@@ -13,8 +13,158 @@ import subprocess
 import json
 import sys
 import pickle
+import requests
+from dataclasses import dataclass
+from typing import List, Dict, Tuple, Optional
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+@dataclass
+class ModelCandidate:
+    """Represents a model candidate from HuggingFace"""
+    model_id: str
+    size_gb: float
+    downloads: int
+    tags: List[str]
+    
+    def __repr__(self):
+        return f"{self.model_id} ({self.size_gb:.1f}GB, {self.downloads:,} downloads)"
+
+class HuggingFaceModelSelector:
+    """Dynamic model selection from HuggingFace API"""
+    
+    def __init__(self):
+        self.api_base = "https://huggingface.co/api/models"
+    
+    def search_coding_models(self, max_results: int = 30) -> List[ModelCandidate]:
+        """Search HuggingFace for coding/systems models"""
+        print("🔍 Querying HuggingFace for latest coding models...")
+        
+        params = {
+            "search": "code instruct",
+            "filter": "text-generation",
+            "sort": "downloads",
+            "direction": -1,
+            "limit": max_results
+        }
+        
+        try:
+            response = requests.get(self.api_base, params=params, timeout=15)
+            response.raise_for_status()
+            models = response.json()
+            
+            candidates = []
+            for model in models:
+                tags = model.get('tags', [])
+                model_id = model.get('modelId', '')
+                
+                # Filter for coding/instruct models
+                is_coding = any(kw in model_id.lower() or kw in str(tags).lower() 
+                               for kw in ['code', 'coder', 'wizard', 'deepseek', 
+                                         'starcoder', 'codellama', 'phind', 'instruct',
+                                         'qwen', 'llama'])
+                
+                if not is_coding:
+                    continue
+                
+                size_gb = self._estimate_size(model_id)
+                
+                candidates.append(ModelCandidate(
+                    model_id=model_id,
+                    size_gb=size_gb,
+                    downloads=model.get('downloads', 0),
+                    tags=tags
+                ))
+            
+            print(f"✅ Found {len(candidates)} suitable models")
+            return candidates
+            
+        except Exception as e:
+            print(f"⚠️ API query failed ({e}), using curated list")
+            return self._get_curated_models()
+    
+    def _estimate_size(self, model_id: str) -> float:
+        """Estimate model size from ID"""
+        model_id_lower = model_id.lower()
+        
+        # Size patterns in GB (accounting for fp32)
+        patterns = {
+            '34b': 68, '33b': 66, '32b': 64,
+            '15b': 30, '14b': 28, '13b': 26,
+            '8b': 16, '7b': 14, '6.7b': 13.4,
+            '3b': 6, '2.7b': 5.4, '1.5b': 3, '1.3b': 2.6,
+            '0.5b': 1, '500m': 1
+        }
+        
+        for pattern, size in patterns.items():
+            if pattern in model_id_lower:
+                return size
+        
+        return 6.0  # Default assumption
+    
+    def _get_curated_models(self) -> List[ModelCandidate]:
+        """Curated fallback list of proven coding models"""
+        return [
+            # Top tier coding models
+            ModelCandidate("deepseek-ai/deepseek-coder-33b-instruct", 66, 400000, ["code"]),
+            ModelCandidate("WizardLM/WizardCoder-33B-V1.1", 66, 300000, ["code"]),
+            ModelCandidate("codellama/CodeLlama-34b-Instruct-hf", 68, 500000, ["code"]),
+            
+            # Mid-tier (12-16GB VRAM)
+            ModelCandidate("deepseek-ai/deepseek-coder-6.7b-instruct", 13.4, 600000, ["code"]),
+            ModelCandidate("WizardLM/WizardCoder-15B-V1.0", 30, 400000, ["code"]),
+            ModelCandidate("codellama/CodeLlama-13b-Instruct-hf", 26, 450000, ["code"]),
+            
+            # General purpose with strong coding
+            ModelCandidate("Qwen/Qwen2.5-Coder-7B-Instruct", 14, 500000, ["code"]),
+            ModelCandidate("Qwen/Qwen2-7B-Instruct", 14, 700000, ["code"]),
+            
+            # Smaller models (4-8GB VRAM)
+            ModelCandidate("deepseek-ai/deepseek-coder-1.3b-instruct", 2.6, 300000, ["code"]),
+            ModelCandidate("Qwen/Qwen2-1.5B-Instruct", 3, 400000, ["general"]),
+        ]
+    
+    def recommend_for_hardware(self, vram_gb: float, gpu_type: str) -> Tuple[str, str]:
+        """Get best model for hardware specs"""
+        candidates = self.search_coding_models()
+        
+        # AMD needs more safety margin due to ROCm overhead
+        safety = 0.65 if 'amd' in gpu_type.lower() else 0.75
+        usable_vram = vram_gb * safety
+        
+        # Filter models that fit
+        fitting = [m for m in candidates if m.size_gb <= usable_vram]
+        
+        if not fitting:
+            return ("deepseek-ai/deepseek-coder-1.3b-instruct", 
+                   "Smallest available (fallback)")
+        
+        # Sort by size (bigger is better, if it fits)
+        fitting.sort(key=lambda m: (m.size_gb, m.downloads), reverse=True)
+        
+        best = fitting[0]
+        
+        # Show options
+        print(f"\n📊 Top models for {vram_gb:.1f}GB VRAM ({gpu_type}):")
+        for i, model in enumerate(fitting[:5], 1):
+            marker = "👉" if i == 1 else "  "
+            print(f"{marker} {i}. {model.model_id}")
+            print(f"      {model.size_gb:.1f}GB, {model.downloads:,} downloads")
+        
+        # Optional: Let user choose
+        print(f"\n✅ Auto-selected: {best.model_id}")
+        try:
+            choice = input("Press Enter to accept, or enter number to choose different model: ").strip()
+            if choice.isdigit():
+                idx = int(choice) - 1
+                if 0 <= idx < len(fitting):
+                    best = fitting[idx]
+                    print(f"✅ Using: {best.model_id}")
+        except (KeyboardInterrupt, EOFError):
+            pass
+        
+        reason = f"{best.size_gb:.1f}GB model with {best.downloads:,} downloads"
+        return (best.model_id, reason)
 
 class GPUManager:
     """Interface between Rust GPU detection and Python training logic"""
@@ -180,35 +330,37 @@ class GPUManager:
         return modern_nvidia
     
     def get_recommended_model_size(self) -> Tuple[str, str]:
-        """Get recommended model size based on capabilities"""
+        """Get recommended model with dynamic HuggingFace lookup"""
         if not self.gpu_info:
-            return ("small", "Qwen/Qwen2-0.5B-Instruct")
+            return ("small", "deepseek-ai/deepseek-coder-1.3b-instruct")
         
         vram_gb = self.gpu_info.get('vram_gb', 0)
         is_ml_ready = self.gpu_info.get('is_ml_ready', False)
-        gpu_type = self.gpu_info.get('gpu_type', '').lower()
+        gpu_type = self.gpu_info.get('gpu_type', 'cpu')
         
-        if not is_ml_ready:
-            return ("small", "Qwen/Qwen2-0.5B-Instruct")
+        if not is_ml_ready or vram_gb < 3:
+            return ("small", "deepseek-ai/deepseek-coder-1.3b-instruct")
         
-        # More conservative model sizing for AMD GPUs
-        if 'amd' in gpu_type or 'radeon' in gpu_type:
-            if vram_gb >= 16:
-                return ("medium", "Qwen/Qwen2-1.5B-Instruct")  # Conservative for AMD
-            elif vram_gb >= 8:
-                return ("small", "Qwen/Qwen2-0.5B-Instruct")
-            else:
-                return ("small", "Qwen/Qwen2-0.5B-Instruct")
+        # Use dynamic selector
+        print(f"\n🤖 Dynamic Model Selection")
+        print("=" * 50)
         
-        # Original logic for NVIDIA
+        selector = HuggingFaceModelSelector()
+        model_id, reason = selector.recommend_for_hardware(vram_gb, gpu_type)
+        
+        print(f"\n💡 Reason: {reason}")
+        
+        # Determine size category for logging
         if vram_gb >= 20:
-            return ("large", "Qwen/Qwen2-14B-Instruct")
+            size_cat = "xlarge"
         elif vram_gb >= 12:
-            return ("medium", "Qwen/Qwen2-7B-Instruct")
+            size_cat = "large"
         elif vram_gb >= 8:
-            return ("medium", "Qwen/Qwen2-1.5B-Instruct")
+            size_cat = "medium"
         else:
-            return ("small", "Qwen/Qwen2-0.5B-Instruct")
+            size_cat = "small"
+        
+        return (size_cat, model_id)
     
     def get_torch_device_config(self) -> Dict:
         """Get PyTorch device configuration based on detected hardware"""
