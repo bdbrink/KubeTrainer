@@ -321,28 +321,65 @@ class SREFineTuner:
         )
     
     def fine_tune(self, output_dir: str = "./sre_fine_tuned") -> str:
-        """Fine-tune the model with LoRA"""
-        print("🎯 Starting SRE fine-tuning with LoRA...")
+        """Fine-tune the model with LoRA - AMD GPU optimized"""
+        print("🎯 Starting SRE fine-tuning with LoRA (AMD GPU Optimized)...")
         
-        # Clear GPU cache before starting
+        # AMD GPU detection and memory management
+        is_amd = False
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            print("🧹 Cleared GPU cache")
+            device_name = torch.cuda.get_device_name(0).lower()
+            is_amd = 'amd' in device_name or 'radeon' in device_name
+            
+            if is_amd:
+                print("🔧 AMD GPU detected - applying aggressive memory optimizations")
+                # Clear all cached memory
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
+                # Set memory management flags
+                import os
+                os.environ['PYTORCH_HIP_ALLOC_CONF'] = 'max_split_size_mb:128'
+                os.environ['HIP_VISIBLE_DEVICES'] = '0'
         
         # Create dataset
         train_dataset = self.create_dataset()
         print(f"📚 Created dataset with {len(train_dataset)} examples")
         
-        # Setup LoRA with memory-efficient config
-        lora_config = self.setup_lora_config()
+        # AMD-specific LoRA config (even more conservative)
+        if is_amd:
+            lora_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=4,  # Reduced from 8 for AMD
+                lora_alpha=8,  # Reduced proportionally
+                lora_dropout=0.05,
+                target_modules=["q_proj", "v_proj"],  # Only attention
+                bias="none"
+            )
+            print("🔧 Using ultra-conservative LoRA config for AMD GPU")
+        else:
+            # Original config for NVIDIA
+            lora_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=8,
+                lora_alpha=16,
+                lora_dropout=0.1,
+                target_modules=["q_proj", "v_proj"],
+                bias="none"
+            )
         
-        # Enable gradient checkpointing if available
-        if hasattr(self.model_info.model, 'gradient_checkpointing_enable'):
-            self.model_info.model.gradient_checkpointing_enable()
-            print("✅ Gradient checkpointing enabled")
+        # Disable gradient checkpointing for AMD (it causes memory issues)
+        if is_amd:
+            if hasattr(self.model_info.model, 'gradient_checkpointing_disable'):
+                self.model_info.model.gradient_checkpointing_disable()
+                print("🔧 Gradient checkpointing DISABLED for AMD GPU")
+        else:
+            # Enable for NVIDIA
+            if hasattr(self.model_info.model, 'gradient_checkpointing_enable'):
+                self.model_info.model.gradient_checkpointing_enable()
+                print("✅ Gradient checkpointing enabled")
         
+        # Apply LoRA
         peft_model = get_peft_model(self.model_info.model, lora_config)
-        
         print("🔧 LoRA configuration applied")
         peft_model.print_trainable_parameters()
         
@@ -350,71 +387,105 @@ class SREFineTuner:
         if self.model_info.tokenizer.pad_token is None:
             self.model_info.tokenizer.pad_token = self.model_info.tokenizer.eos_token
         
-        # Aggressive memory optimization for training arguments
-        # Reduce batch size if necessary
-        effective_batch_size = max(1, self.model_info.batch_size // 2)  # Halve batch size
+        # Ultra-aggressive memory optimization for AMD
+        if is_amd:
+            # Extremely small batch size for AMD
+            effective_batch_size = 1  # Start with 1
+            gradient_accumulation = 16  # Accumulate more gradients
+            max_seq_length = 256  # Shorter sequences
+            
+            print(f"💾 AMD GPU Memory Optimization:")
+            print(f"   - Batch size: {effective_batch_size}")
+            print(f"   - Gradient accumulation: {gradient_accumulation} steps")
+            print(f"   - Max sequence length: {max_seq_length}")
+            print(f"   - Gradient checkpointing: DISABLED")
+        else:
+            # NVIDIA settings
+            effective_batch_size = max(1, self.model_info.batch_size // 2)
+            gradient_accumulation = 8
+            max_seq_length = 512
+            
+            print(f"💾 Memory optimization:")
+            print(f"   - Batch size: {effective_batch_size}")
+            print(f"   - Gradient accumulation: {gradient_accumulation} steps")
         
-        print(f"💾 Memory optimization:")
-        print(f"   - Batch size: {effective_batch_size} (reduced from {self.model_info.batch_size})")
-        print(f"   - Gradient accumulation: 8 steps")
-        print(f"   - Gradient checkpointing: Enabled")
-        
-        # Training arguments with aggressive memory saving
+        # Training arguments - AMD optimized
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=effective_batch_size,
-            gradient_accumulation_steps=8,  # Increased to compensate for smaller batch
-            num_train_epochs=3,
+            gradient_accumulation_steps=gradient_accumulation,
+            num_train_epochs=1,  # Reduced from 3 for testing
             learning_rate=2e-4,
-            fp16=self.model_info.use_mixed_precision,
-            logging_steps=10,
-            save_steps=100,  # Save less frequently to reduce memory spikes
-            warmup_steps=10,
-            save_total_limit=1,  # Keep only 1 checkpoint to save memory
+            fp16=False,  # Never use fp16 on AMD
+            bf16=False,  # Never use bf16 on AMD
+            logging_steps=5,
+            save_steps=200,
+            warmup_steps=5,
+            save_total_limit=1,
             remove_unused_columns=False,
             report_to=None,
-            gradient_checkpointing=True,  # Enable gradient checkpointing
-            optim="adamw_torch",  # Use PyTorch's memory-efficient optimizer
-            max_grad_norm=0.3,  # Gradient clipping for stability
+            gradient_checkpointing=False if is_amd else True,
+            optim="adamw_torch",
+            max_grad_norm=0.3,
+            dataloader_num_workers=0,  # No multi-process data loading
+            dataloader_pin_memory=False,  # Don't pin memory on AMD
+            eval_strategy="no",  # No evaluation during training
+            save_strategy="steps",
+            max_steps=100 if is_amd else -1,  # Limit steps for AMD testing
         )
         
-        # Trainer - tokenizer passed differently in newer TRL versions
+        # Try to move model to CPU for LoRA prep on AMD
+        if is_amd:
+            print("🔧 AMD: Moving model to CPU for LoRA preparation...")
+            try:
+                peft_model = peft_model.to('cpu')
+                torch.cuda.empty_cache()
+                print("✅ Model moved to CPU")
+            except Exception as e:
+                print(f"⚠️ Could not move to CPU: {e}")
+        
+        # Trainer setup with error handling
         try:
-            # Try newer TRL API (tokenizer as part of model)
+            # Try SFTTrainer first
             trainer = SFTTrainer(
                 model=peft_model,
                 args=training_args,
                 train_dataset=train_dataset,
                 dataset_text_field="text",
-                max_seq_length=512,
+                max_seq_length=max_seq_length,
                 tokenizer=self.model_info.tokenizer,
                 packing=False,
+                dataset_kwargs={
+                    "skip_prepare_dataset": False,
+                }
             )
-        except TypeError as e:
-            # Fallback for older TRL versions or different API
-            print("⚠️ Adjusting for TRL version compatibility...")
-            from transformers import Trainer
+            print("✅ SFTTrainer initialized")
             
-            # Use standard Trainer with data collator
+        except Exception as e:
+            print(f"⚠️ SFTTrainer failed, using standard Trainer: {e}")
+            
+            # Fallback to standard Trainer
+            from transformers import Trainer, DataCollatorForLanguageModeling
+            
             data_collator = DataCollatorForLanguageModeling(
                 tokenizer=self.model_info.tokenizer,
                 mlm=False,
             )
             
-            # Need to tokenize the dataset first
             def tokenize_function(examples):
                 return self.model_info.tokenizer(
                     examples["text"],
                     padding="max_length",
                     truncation=True,
-                    max_length=512,
+                    max_length=max_seq_length,
                     return_tensors="pt"
                 )
             
             tokenized_dataset = train_dataset.map(
                 tokenize_function,
                 batched=True,
-                remove_columns=train_dataset.column_names
+                remove_columns=train_dataset.column_names,
+                desc="Tokenizing"
             )
             
             trainer = Trainer(
@@ -424,17 +495,67 @@ class SREFineTuner:
                 data_collator=data_collator,
             )
         
-        # Train
+        # Move back to GPU for training if AMD
+        if is_amd:
+            print("🔧 AMD: Moving model back to GPU for training...")
+            try:
+                peft_model = peft_model.to('cuda')
+                torch.cuda.empty_cache()
+                print("✅ Model on GPU")
+            except Exception as e:
+                print(f"❌ Failed to move to GPU: {e}")
+                print("💡 Continuing training on CPU (will be slower)")
+        
+        # Train with error handling
         print("🚀 Starting training...")
         start_time = datetime.now()
-        trainer.train()
-        training_time = datetime.now() - start_time
         
-        print(f"✅ Training completed in {training_time}")
+        try:
+            trainer.train()
+            training_time = datetime.now() - start_time
+            print(f"✅ Training completed in {training_time}")
+            
+        except RuntimeError as e:
+            error_msg = str(e).lower()
+            
+            if 'hip' in error_msg or 'out of memory' in error_msg:
+                print(f"❌ AMD GPU memory error: {e}")
+                print("\n💡 Suggestions:")
+                print("   1. The model might be too large for fine-tuning on AMD GPU")
+                print("   2. Try a smaller model (1.3B or 0.5B)")
+                print("   3. Fine-tuning on CPU is an option (slower but works)")
+                print("   4. Consider using RAG-only mode without fine-tuning")
+                
+                # Offer CPU fallback
+                print("\n🔄 Attempting CPU fallback...")
+                try:
+                    peft_model = peft_model.to('cpu')
+                    torch.cuda.empty_cache()
+                    
+                    # Update training args for CPU
+                    training_args.per_device_train_batch_size = 1
+                    training_args.gradient_accumulation_steps = 32
+                    training_args.max_steps = 50  # Fewer steps on CPU
+                    training_args.fp16 = False
+                    
+                    print("🐌 Training on CPU (this will be slow)...")
+                    trainer.train()
+                    print("✅ CPU training completed!")
+                    
+                except Exception as cpu_error:
+                    print(f"❌ CPU fallback also failed: {cpu_error}")
+                    raise e
+            else:
+                raise e
         
         # Save the model
-        trainer.save_model()
-        print(f"💾 Model saved to {output_dir}")
+        try:
+            trainer.save_model()
+            print(f"💾 Model saved to {output_dir}")
+        except Exception as e:
+            print(f"⚠️ Error saving model: {e}")
+            print("Attempting manual save...")
+            peft_model.save_pretrained(output_dir)
         
         return output_dir
 
