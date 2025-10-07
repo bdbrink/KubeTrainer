@@ -36,52 +36,82 @@ class HuggingFaceModelSelector:
     def __init__(self):
         self.api_base = "https://huggingface.co/api/models"
     
-    def search_coding_models(self, max_results: int = 30) -> List[ModelCandidate]:
-        """Search HuggingFace for coding/systems models"""
-        print("🔍 Querying HuggingFace for latest coding models...")
+    def search_sre_models(self, max_results: int = 30) -> List[ModelCandidate]:
+        """Search HuggingFace for reasoning/systems models suitable for SRE tasks"""
+        print("🔍 Querying HuggingFace for reasoning & systems models...")
         
-        params = {
-            "search": "code instruct",
-            "filter": "text-generation",
-            "sort": "downloads",
-            "direction": -1,
-            "limit": max_results
-        }
+        # Try multiple search queries to get diverse candidates
+        search_queries = [
+            "reasoning instruct",
+            "deepseek reasoning", 
+            "qwen reasoning",
+            "systems analysis"
+        ]
         
-        try:
-            response = requests.get(self.api_base, params=params, timeout=15)
-            response.raise_for_status()
-            models = response.json()
+        all_candidates = []
+        seen_ids = set()
+        
+        for search_term in search_queries:
+            params = {
+                "search": search_term,
+                "filter": "text-generation",
+                "sort": "downloads",
+                "direction": -1,
+                "limit": max_results // len(search_queries)
+            }
             
-            candidates = []
-            for model in models:
-                tags = model.get('tags', [])
-                model_id = model.get('modelId', '')
+            try:
+                response = requests.get(self.api_base, params=params, timeout=15)
+                response.raise_for_status()
+                models = response.json()
                 
-                # Filter for coding/instruct models
-                is_coding = any(kw in model_id.lower() or kw in str(tags).lower() 
-                               for kw in ['code', 'coder', 'wizard', 'deepseek', 
-                                         'starcoder', 'codellama', 'phind', 'instruct',
-                                         'qwen', 'llama'])
+                for model in models:
+                    tags = model.get('tags', [])
+                    model_id = model.get('modelId', '')
+                    
+                    # Skip duplicates
+                    if model_id in seen_ids:
+                        continue
+                        
+                    # Filter for reasoning/analysis-capable models
+                    is_suitable = any(kw in model_id.lower() or kw in str(tags).lower() 
+                                    for kw in [
+                                        # Reasoning models
+                                        'reasoning', 'think', 'r1', 'deepseek-r1',
+                                        # Strong instruction followers
+                                        'qwen', 'deepseek', 'llama-3', 'mistral',
+                                        # Code understanding
+                                        'coder', 'code', 'starcoder',
+                                        # General instruct
+                                        'instruct', 'chat'
+                                    ])
+                    
+                    # Deprioritize pure code generation models
+                    is_pure_codegen = any(kw in model_id.lower() 
+                                        for kw in ['codegen', 'commit', 'autocomplete'])
+                    
+                    if not is_suitable or is_pure_codegen:
+                        continue
+                    
+                    seen_ids.add(model_id)
+                    size_gb = self._estimate_size(model_id)
+                    
+                    all_candidates.append(ModelCandidate(
+                        model_id=model_id,
+                        size_gb=size_gb,
+                        downloads=model.get('downloads', 0),
+                        tags=tags
+                    ))
                 
-                if not is_coding:
-                    continue
-                
-                size_gb = self._estimate_size(model_id)
-                
-                candidates.append(ModelCandidate(
-                    model_id=model_id,
-                    size_gb=size_gb,
-                    downloads=model.get('downloads', 0),
-                    tags=tags
-                ))
-            
-            print(f"✅ Found {len(candidates)} suitable models")
-            return candidates
-            
-        except Exception as e:
-            print(f"⚠️ API query failed ({e}), using curated list")
-            return self._get_curated_models()
+            except Exception as e:
+                print(f"⚠️ Query '{search_term}' failed: {e}")
+                continue
+        
+        # Sort by downloads and remove duplicates
+        all_candidates = sorted(all_candidates, key=lambda x: x.downloads, reverse=True)
+        print(f"✅ Found {len(all_candidates)} suitable SRE models")
+        
+        return all_candidates if all_candidates else self._get_curated_sre_models()
     
     def _estimate_size(self, model_id: str) -> float:
         """Estimate model size from ID"""
@@ -126,7 +156,7 @@ class HuggingFaceModelSelector:
     
     def recommend_for_hardware(self, vram_gb: float, gpu_type: str) -> Tuple[str, str]:
         """Get best model for hardware specs"""
-        candidates = self.search_coding_models()
+        candidates = self.search_sre_models()
         
         # AMD needs more safety margin due to ROCm overhead
         safety = 0.65 if 'amd' in gpu_type.lower() else 0.75
