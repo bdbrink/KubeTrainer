@@ -35,9 +35,15 @@ class HuggingFaceModelSelector:
     
     def __init__(self):
         self.api_base = "https://huggingface.co/api/models"
+        self._cached_candidates = None
     
     def search_sre_models(self, max_results: int = 30) -> List[ModelCandidate]:
         """Search HuggingFace for reasoning/systems models suitable for SRE tasks"""
+
+        if self._cached_candidates is not None:
+            print("📦 Using cached model candidates")
+            return self._cached_candidates
+
         print("🔍 Querying HuggingFace for reasoning & systems models...")
         
         # Blacklist patterns for problematic models
@@ -229,11 +235,12 @@ class GPUManager:
                     break
             
             if rust_binary_path is None:
-                rust_binary_path = "../gpu-detect/target/release/gpu_detect"  # Your structure
+                rust_binary_path = "../gpu-detect/target/release/gpu_detect"
         
         self.rust_binary_path = rust_binary_path
         self.gpu_info = None
         self.system_specs = None
+        self.model_selector = HuggingFaceModelSelector()
         self._detect_gpu_info()
     
     def _detect_gpu_info(self) -> None:
@@ -391,8 +398,8 @@ class GPUManager:
         print(f"\n🤖 Dynamic Model Selection")
         print("=" * 50)
         
-        selector = HuggingFaceModelSelector()
-        model_id, reason = selector.recommend_for_hardware(vram_gb, gpu_type)
+        # Use the cached selector instead of creating a new one
+        model_id, reason = self.model_selector.recommend_for_hardware(vram_gb, gpu_type)
         
         print(f"\n💡 Reason: {reason}")
         
