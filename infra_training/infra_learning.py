@@ -40,12 +40,24 @@ class HuggingFaceModelSelector:
         """Search HuggingFace for reasoning/systems models suitable for SRE tasks"""
         print("🔍 Querying HuggingFace for reasoning & systems models...")
         
-        # Try multiple search queries to get diverse candidates
+        # Blacklist patterns for problematic models
+        BLACKLIST_PATTERNS = [
+            'gguf',           # GGUF quantized (use llama.cpp instead)
+            'abliterated',    # Custom merged models
+            'uncensored',     # Often custom/unstable
+            'franken',        # Frankenstein merges
+            'moe',            # Many custom MOEs lack proper configs
+            'gated-moe',      # Custom gated MOEs
+            'exl2',           # ExLlamaV2 quantization
+            'awq',            # AWQ quantization (unless you have AutoAWQ)
+            'gptq',           # GPTQ quantization (unless you have AutoGPTQ)
+        ]
+        
         search_queries = [
-            "reasoning instruct",
-            "deepseek reasoning", 
-            "qwen reasoning",
-            "systems analysis"
+            "deepseek-r1 instruct",
+            "qwen2.5 reasoning", 
+            "llama-3 instruct",
+            "mistral instruct"
         ]
         
         all_candidates = []
@@ -57,7 +69,7 @@ class HuggingFaceModelSelector:
                 "filter": "text-generation",
                 "sort": "downloads",
                 "direction": -1,
-                "limit": max_results // len(search_queries)
+                "limit": max_results
             }
             
             try:
@@ -66,50 +78,54 @@ class HuggingFaceModelSelector:
                 models = response.json()
                 
                 for model in models:
-                    tags = model.get('tags', [])
                     model_id = model.get('modelId', '')
+                    tags = model.get('tags', [])
                     
                     # Skip duplicates
                     if model_id in seen_ids:
                         continue
-                        
+                    
+                    # Skip blacklisted patterns
+                    model_lower = model_id.lower()
+                    if any(pattern in model_lower for pattern in BLACKLIST_PATTERNS):
+                        print(f"⚠️  Skipping incompatible model: {model_id}")
+                        continue
+                    
+                    # Prefer official/org models over user uploads
+                    is_official = '/' in model_id and not model_id.split('/')[0].startswith(('David', 'User', 'TheBloke'))
+                    
                     # Filter for reasoning/analysis-capable models
-                    is_suitable = any(kw in model_id.lower() or kw in str(tags).lower() 
+                    is_suitable = any(kw in model_lower or kw in str(tags).lower() 
                                     for kw in [
-                                        # Reasoning models
-                                        'reasoning', 'think', 'r1', 'deepseek-r1',
-                                        # Strong instruction followers
-                                        'qwen', 'deepseek', 'llama-3', 'mistral',
-                                        # Code understanding
-                                        'coder', 'code', 'starcoder',
-                                        # General instruct
+                                        'r1', 'reasoning', 'deepseek',
+                                        'qwen2.5', 'llama-3', 'mistral',
                                         'instruct', 'chat'
                                     ])
                     
-                    # Deprioritize pure code generation models
-                    is_pure_codegen = any(kw in model_id.lower() 
-                                        for kw in ['codegen', 'commit', 'autocomplete'])
-                    
-                    if not is_suitable or is_pure_codegen:
+                    if not is_suitable:
                         continue
                     
                     seen_ids.add(model_id)
                     size_gb = self._estimate_size(model_id)
                     
+                    # Boost official models
+                    downloads = model.get('downloads', 0)
+                    if is_official:
+                        downloads *= 1.5
+                    
                     all_candidates.append(ModelCandidate(
                         model_id=model_id,
                         size_gb=size_gb,
-                        downloads=model.get('downloads', 0),
+                        downloads=int(downloads),
                         tags=tags
                     ))
                 
             except Exception as e:
-                print(f"⚠️ Query '{search_term}' failed: {e}")
+                print(f"⚠️  Query '{search_term}' failed: {e}")
                 continue
         
-        # Sort by downloads and remove duplicates
         all_candidates = sorted(all_candidates, key=lambda x: x.downloads, reverse=True)
-        print(f"✅ Found {len(all_candidates)} suitable SRE models")
+        print(f"✅ Found {len(all_candidates)} compatible SRE models")
         
         return all_candidates if all_candidates else self._get_curated_sre_models()
     
