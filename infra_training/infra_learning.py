@@ -40,6 +40,7 @@ class HuggingFaceModelSelector:
     def search_sre_models(self, max_results: int = 30) -> List[ModelCandidate]:
         """Search HuggingFace for reasoning/systems models suitable for SRE tasks"""
 
+        # Return cached results if available
         if self._cached_candidates is not None:
             print("📦 Using cached model candidates")
             return self._cached_candidates
@@ -48,15 +49,8 @@ class HuggingFaceModelSelector:
         
         # Blacklist patterns for problematic models
         BLACKLIST_PATTERNS = [
-            'gguf',           # GGUF quantized (use llama.cpp instead)
-            'abliterated',    # Custom merged models
-            'uncensored',     # Often custom/unstable
-            'franken',        # Frankenstein merges
-            'moe',            # Many custom MOEs lack proper configs
-            'gated-moe',      # Custom gated MOEs
-            'exl2',           # ExLlamaV2 quantization
-            'awq',            # AWQ quantization (unless you have AutoAWQ)
-            'gptq',           # GPTQ quantization (unless you have AutoGPTQ)
+            'gguf', 'abliterated', 'uncensored', 'franken', 'moe',
+            'gated-moe', 'exl2', 'awq', 'gptq',
         ]
         
         search_queries = [
@@ -130,10 +124,19 @@ class HuggingFaceModelSelector:
                 print(f"⚠️  Query '{search_term}' failed: {e}")
                 continue
         
+        # Sort candidates
         all_candidates = sorted(all_candidates, key=lambda x: x.downloads, reverse=True)
-        print(f"✅ Found {len(all_candidates)} compatible SRE models")
         
-        return all_candidates if all_candidates else self._get_curated_sre_models()
+        # Cache the results (fallback to curated if empty)
+        if all_candidates:
+            self._cached_candidates = all_candidates
+        else:
+            self._cached_candidates = self._get_curated_sre_models()
+        
+        # Now it's safe to print
+        print(f"✅ Found {len(self._cached_candidates)} compatible SRE models")
+        
+        return self._cached_candidates
     
     def _estimate_size(self, model_id: str) -> float:
         """Estimate model size from ID"""
