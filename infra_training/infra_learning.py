@@ -51,8 +51,23 @@ class HuggingFaceModelSelector:
         
         # Blacklist patterns for problematic models
         BLACKLIST_PATTERNS = [
-            'gguf', 'abliterated', 'uncensored', 'franken', 'moe',
-            'gated-moe', 'exl2', 'awq', 'gptq',
+            'gguf',           # GGUF quantized (use llama.cpp instead)
+            'abliterated',    # Custom merged models
+            'uncensored',     # Often custom/unstable
+            'franken',        # Frankenstein merges
+            'moe',            # Many custom MOEs lack proper configs
+            'gated-moe',      # Custom gated MOEs
+            'exl2',           # ExLlamaV2 quantization
+            'awq',            # AWQ quantization (unless you have AutoAWQ)
+            'gptq',           # GPTQ quantization (unless you have AutoGPTQ)
+            'fp8',            # FP8 quantization (H100+ only)
+            'int8',           # INT8 quantization (needs bitsandbytes)
+            'int4',           # INT4 quantization (needs bitsandbytes)
+            'bnb',            # ✨ bitsandbytes quantization
+            '4bit',           # ✨ 4-bit quantization
+            '8bit',           # ✨ 8-bit quantization
+            'nf4',            # ✨ NormalFloat 4-bit
+            'unsloth',        # ✨ Unsloth optimized models (usually quantized)
         ]
         
         search_queries = [
