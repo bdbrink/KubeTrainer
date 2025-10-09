@@ -35,6 +35,8 @@ class HuggingFaceModelSelector:
     
     def __init__(self):
         self.api_base = "https://huggingface.co/api/models"
+        self.cached_model = None
+        self.cached_reason = None
         self._cached_candidates = None
     
     def search_sre_models(self, max_results: int = 30) -> List[ModelCandidate]:
@@ -131,7 +133,7 @@ class HuggingFaceModelSelector:
         if all_candidates:
             self._cached_candidates = all_candidates
         else:
-            self._cached_candidates = self._get_curated_sre_models()
+            self._cached_candidates = self._get_curated_models()
         
         # Now it's safe to print
         print(f"✅ Found {len(self._cached_candidates)} compatible SRE models")
@@ -181,6 +183,10 @@ class HuggingFaceModelSelector:
     
     def recommend_for_hardware(self, vram_gb: float, gpu_type: str) -> Tuple[str, str]:
         """Get best model for hardware specs"""
+        if self.cached_model is not None:
+            print("\n📦 Using cached model candidates")
+            return self.cached_model, self.cached_reason
+
         candidates = self.search_sre_models()
         
         # AMD needs more safety margin due to ROCm overhead
@@ -219,7 +225,10 @@ class HuggingFaceModelSelector:
             pass
         
         reason = f"{best.size_gb:.1f}GB model with {best.downloads:,} downloads"
-        return (best.model_id, reason)
+        self.cached_model = best.model_id
+        self.cached_reason = reason
+
+        return self.cached_model, self.cached_reason
 
 class GPUManager:
     """Interface between Rust GPU detection and Python training logic"""
@@ -243,6 +252,7 @@ class GPUManager:
         self.rust_binary_path = rust_binary_path
         self.gpu_info = None
         self.system_specs = None
+        self._cached_model_recommendation = None
         self.model_selector = HuggingFaceModelSelector()
         self._detect_gpu_info()
     
@@ -416,7 +426,8 @@ class GPUManager:
         else:
             size_cat = "small"
         
-        return (size_cat, model_id)
+        self._cached_model_recommendation = (size_cat, model_id)
+        return self._cached_model_recommendation
     
     def get_torch_device_config(self) -> Dict:
         """Get PyTorch device configuration based on detected hardware"""
