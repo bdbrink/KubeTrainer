@@ -196,6 +196,29 @@ class HuggingFaceModelSelector:
             ModelCandidate("Qwen/Qwen2-1.5B-Instruct", 3, 400000, ["general"]),
         ]
     
+    def _get_actual_model_size(self, model_id: str) -> float:
+        """Get actual model size from HuggingFace API"""
+        try:
+            response = requests.get(
+                f"https://huggingface.co/api/models/{model_id}",
+                timeout=10
+            )
+            if response.ok:
+                data = response.json()
+                # Get size from safetensors or pytorch_model files
+                if 'safetensors' in data:
+                    total_size = sum(
+                        file.get('size', 0) 
+                        for file in data.get('siblings', [])
+                        if file.get('rfilename', '').endswith(('.safetensors', '.bin'))
+                    )
+                    return total_size / (1024**3)  # Convert to GB
+        except Exception:
+            pass
+        
+        # Fall back to estimation
+        return self._estimate_size(model_id)
+
     def recommend_for_hardware(self, vram_gb: float, gpu_type: str) -> Tuple[str, str]:
         """Get best model for hardware specs"""
         if self.cached_model is not None:
@@ -207,6 +230,14 @@ class HuggingFaceModelSelector:
         # AMD needs more safety margin due to ROCm overhead
         safety = 0.65 if 'amd' in gpu_type.lower() else 0.75
         usable_vram = vram_gb * safety
+
+        # Get actual sizes for candidates
+        print("🔍 Checking actual model sizes...")
+        for candidate in candidates[:10]:  # Only check top 10 to save time
+            actual_size = self._get_actual_model_size(candidate.model_id)
+            if actual_size != candidate.size_gb:
+                print(f"📏 {candidate.model_id}: {actual_size:.1f}GB (was {candidate.size_gb:.1f}GB)")
+                candidate.size_gb = actual_size
         
         # Filter models that fit
         fitting = [m for m in candidates if m.size_gb <= usable_vram]
