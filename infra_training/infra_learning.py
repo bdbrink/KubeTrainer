@@ -528,8 +528,18 @@ def load_model_with_gpu_config(gpu_manager: GPUManager):
     # Get recommended model and config
     model_size, model_name = gpu_manager.get_recommended_model_size()
     device_config = gpu_manager.get_torch_device_config()
+
+
+    # ✨ Check system RAM before loading
+    system_ram_gb = psutil.virtual_memory().available / (1024**3)
+    selector = HuggingFaceModelSelector()
+    estimated_size = selector._estimate_size(model_name)
+    
+    if estimated_size * 1.5 > system_ram_gb:
+        print(f"⚠️ Insufficient RAM! Model needs ~{estimated_size * 1.5:.1f}GB, only {system_ram_gb:.1f}GB available")
     
     print(f"Selected Model: {model_name}")
+    print(f"Estimated Size: {estimated_size:.1f}GB")
     print(f"Device Config: {device_config['device']} | {device_config['torch_dtype']}")
     
     # AMD-specific info
