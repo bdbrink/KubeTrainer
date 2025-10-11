@@ -880,7 +880,7 @@ def save_model_info(tokenizer, model, device, gpu_manager, output_file="./model_
         'tokenizer': tokenizer,
         'device': device,
         'gpu_info': gpu_manager.gpu_info,
-        'batch_size': gpu_manager.get_optimal_batch_size(),  # FIXED: Removed argument
+        'batch_size': gpu_manager.get_optimal_batch_size(),
         'use_mixed_precision': gpu_manager.should_use_mixed_precision(),
     }
     
@@ -928,21 +928,51 @@ def launch_rag_pipeline(model_info_file, mode="both", test=True):
         print(f"❌ Python interpreter not found: {sys.executable}")
         return False
 
+def load_cached_model_info(model_info_file="./model_info.pkl"):
+    """Load model info from cached pkl file"""
+    if Path(model_info_file).exists():
+        print(f"📦 Found cached model: {model_info_file}")
+        try:
+            with open(model_info_file, 'rb') as f:
+                model_info = pickle.load(f)
+            print(f"✅ Loaded cached model successfully")
+            return model_info
+        except Exception as e:
+            print(f"⚠️ Failed to load cached model: {e}")
+            print(f"🔄 Will load fresh model instead")
+            return None
+    else:
+        print(f"📦 No cached model found at {model_info_file}")
+        return None
+
 def main():
-    """
-    Enhanced main function with AMD GPU compatibility fixes
-    """
+    """Enhanced main function with cached model detection"""
     print("🎯 Enhanced SRE AI Training - Full Pipeline (AMD GPU Compatible)")
     print("=" * 70)
     
-    # Initialize GPU manager (this runs Rust detection)
-    gpu_manager = GPUManager()
+    # Try to load cached model first
+    cached_model_info = load_cached_model_info("./model_info.pkl")
     
-    # Enhanced system check
-    enhanced_system_check(gpu_manager)
-    
-    # Load model with GPU-optimized config
-    tokenizer, model, device = load_model_with_gpu_config(gpu_manager)
+    if cached_model_info:
+        print("\n✅ Using cached model")
+        tokenizer = cached_model_info['tokenizer']
+        model = cached_model_info['model']
+        device = cached_model_info['device']
+        
+        # Reconstruct GPU manager info from cache
+        gpu_manager = GPUManager()
+        gpu_manager.gpu_info = cached_model_info['gpu_info']
+        
+    else:
+        # Initialize GPU manager if not using cache
+        print("\n🔧 Loading fresh model...")
+        gpu_manager = GPUManager()
+        
+        # Enhanced system check
+        enhanced_system_check(gpu_manager)
+        
+        # Load model with GPU-optimized config
+        tokenizer, model, device = load_model_with_gpu_config(gpu_manager)
     
     if tokenizer and model:
         # Run inference test (with AMD GPU error handling)
@@ -959,8 +989,11 @@ def main():
         if gpu_manager.is_amd_gpu():
             print(f"🔧 AMD GPU detected - using conservative settings")
         
-        # Save model info and launch RAG pipeline
-        model_info_file = save_model_info(tokenizer, model, device, gpu_manager)
+        # Save model info if it's fresh (for future runs)
+        if not cached_model_info:
+            model_info_file = save_model_info(tokenizer, model, device, gpu_manager)
+        else:
+            model_info_file = "./model_info.pkl"
         
         if model_info_file:
             print(f"\n🤖 Ready to launch RAG/Fine-tuning pipeline!")
@@ -996,7 +1029,7 @@ def main():
                     
             except KeyboardInterrupt:
                 print(f"\n✅ Basic setup completed - pipeline skipped")
-        
+    
     else:
         print("❌ Setup failed. Check your configuration.")
 
