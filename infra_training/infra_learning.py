@@ -953,7 +953,19 @@ def main():
     # Try to load cached model first
     cached_model_info = load_cached_model_info("./model_info.pkl")
     
+    use_cache = True
     if cached_model_info:
+        print("\nCached model found. Do you want to use it?")
+        print("1. Use cached model (fast)")
+        print("2. Load fresh model (skip cache)")
+        
+        try:
+            choice = input("\nEnter choice (1-2, default 1): ").strip() or "1"
+            use_cache = choice == "1"
+        except (KeyboardInterrupt, EOFError):
+            use_cache = True
+    
+    if cached_model_info and use_cache:
         print("\n✅ Using cached model")
         tokenizer = cached_model_info['tokenizer']
         model = cached_model_info['model']
@@ -973,6 +985,9 @@ def main():
         
         # Load model with GPU-optimized config
         tokenizer, model, device = load_model_with_gpu_config(gpu_manager)
+        
+        # Save model info for future runs
+        model_info_file = save_model_info(tokenizer, model, device, gpu_manager)
     
     if tokenizer and model:
         # Run inference test (with AMD GPU error handling)
