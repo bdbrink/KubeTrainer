@@ -199,24 +199,48 @@ class HuggingFaceModelSelector:
     def _get_actual_model_size(self, model_id: str) -> float:
         """Get actual model size from HuggingFace API"""
         try:
+            # Get model info from HuggingFace API
             response = requests.get(
                 f"https://huggingface.co/api/models/{model_id}",
                 timeout=10
             )
             if response.ok:
                 data = response.json()
-                # Get size from safetensors or pytorch_model files
-                if 'safetensors' in data:
+                
+                # Method 1: Check if safetensors field exists (indicates safetensors files)
+                if data.get('safetensors'):
+                    try:
+                        # Get the safetensors file info
+                        response = requests.get(
+                            f"https://huggingface.co/api/models/{model_id}/revision/main",
+                            timeout=10
+                        )
+                        if response.ok:
+                            files = response.json()
+                            total_size = sum(
+                                file.get('size', 0)
+                                for file in files.get('siblings', [])
+                                if file.get('rfilename', '').endswith(('.safetensors', '.bin'))
+                            )
+                            if total_size > 0:
+                                return total_size / (1024**3)  # Convert to GB
+                    except Exception:
+                        pass
+                
+                # Method 2: Try to get size from model config if available
+                if data.get('siblings'):
                     total_size = sum(
-                        file.get('size', 0) 
+                        file.get('size', 0)
                         for file in data.get('siblings', [])
-                        if file.get('rfilename', '').endswith(('.safetensors', '.bin'))
+                        if file.get('rfilename', '').endswith(('.safetensors', '.bin', '.pt'))
                     )
-                    return total_size / (1024**3)  # Convert to GB
-        except Exception:
-            pass
+                    if total_size > 0:
+                        return total_size / (1024**3)  # Convert to GB
         
-        # Fall back to estimation
+        except Exception as e:
+            print(f"Error fetching model size for {model_id}: {e}")
+        
+        # Fall back to estimation if API methods fail
         return self._estimate_size(model_id)
 
     def recommend_for_hardware(self, vram_gb: float, gpu_type: str) -> Tuple[str, str]:
