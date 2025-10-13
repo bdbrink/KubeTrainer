@@ -969,6 +969,94 @@ def load_cached_model_info(model_info_file="./model_info.pkl"):
         print(f"📦 No cached model found at {model_info_file}")
         return None
 
+def can_fit_model(model_size_gb: float, vram_gb: float, is_amd: bool = False) -> Tuple[bool, str]:
+    """
+    Check if model will fit with safety margins.
+    Returns (fits, reason_string)
+    """
+    # Overhead for model loading, KV cache, optimizer states, etc.
+    if is_amd:
+        # AMD/ROCm has higher overhead
+        safety_margin = 0.50  # Only use 50% of VRAM
+        overhead_gb = 2.0  # Extra 2GB for ROCm runtime
+    else:
+        # NVIDIA
+        safety_margin = 0.70  # Use 70% of VRAM
+        overhead_gb = 1.5
+    
+    usable_vram = (vram_gb * safety_margin) - overhead_gb
+    
+    if model_size_gb <= usable_vram:
+        return True, f"{model_size_gb:.1f}GB model fits ({usable_vram:.1f}GB available)"
+    else:
+        needed = model_size_gb - usable_vram
+        return False, f"Model {model_size_gb:.1f}GB exceeds available {usable_vram:.1f}GB (need {needed:.1f}GB more)"
+
+def load_model_safely(model_id: str, vram_gb: float, is_amd: bool = False):
+    """
+    Load a model with strict pre-flight checks.
+    """
+    print(f"\nPre-flight checks for {model_id}...")
+    print("=" * 60)
+    
+    # 1. Verify model size
+    print(f"1. Checking model size...")
+    model_size = get_safe_model_size(model_id, verbose=True)
+    
+    if model_size is None:
+        print("   ❌ Could not verify model size - refusing to load")
+        return None, None, None
+    
+    # 2. Check if it fits
+    print(f"2. Checking available VRAM...")
+    fits, reason = can_fit_model(model_size, vram_gb, is_amd)
+    print(f"   {reason}")
+    
+    if not fits:
+        print("   ❌ Model won't fit - refusing to load")
+        return None, None, None
+    
+    # 3. Check system RAM as buffer
+    print(f"3. Checking system RAM...")
+    available_ram_gb = psutil.virtual_memory().available / (1024**3)
+    print(f"   Available: {available_ram_gb:.1f}GB")
+    
+    if available_ram_gb < 4:
+        print("   ⚠️ Low system RAM - loading may still fail")
+    
+    # 4. Actually try to load
+    print(f"4. Attempting to load model...")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=torch.float32 if is_amd else torch.float16,
+            device_map="auto" if not is_amd else None,
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
+        )
+        
+        if is_amd and device == "cuda":
+            model = model.to("cuda")
+        
+        print(f"   ✅ Successfully loaded on {device}")
+        return tokenizer, model, device
+        
+    except RuntimeError as e:
+        print(f"   ❌ OOM Error during loading: {e}")
+        if "out of memory" in str(e).lower():
+            print(f"   💡 This model doesn't fit despite predictions")
+            print(f"   💡 Try a smaller model or clear GPU cache")
+        return None, None, None
+    except Exception as e:
+        print(f"   ❌ Error: {e}")
+        return None, None, None
+
 def main():
     """Enhanced main function with cached model detection"""
     print("🎯 Enhanced SRE AI Training - Full Pipeline (AMD GPU Compatible)")
