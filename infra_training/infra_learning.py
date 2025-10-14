@@ -252,7 +252,7 @@ class HuggingFaceModelSelector:
         candidates = self.search_sre_models()
         
         # AMD needs more safety margin due to ROCm overhead
-        safety = 0.65 if 'amd' in gpu_type.lower() else 0.75
+        safety = 0.55 if 'amd' in gpu_type.lower() else 0.75
         usable_vram = vram_gb * safety
 
         # Get actual sizes for candidates
@@ -1056,6 +1056,33 @@ def load_model_safely(model_id: str, vram_gb: float, is_amd: bool = False):
     except Exception as e:
         print(f"   ❌ Error: {e}")
         return None, None, None
+
+def main_oom_safe():
+    gpu_manager = GPUManager()
+    enhanced_system_check(gpu_manager)
+    
+    vram_gb = gpu_manager.gpu_info.get('vram_gb', 0)
+    is_amd = gpu_manager.is_amd_gpu()
+    
+    if vram_gb < 2:
+        print("❌ Not enough VRAM for any model")
+        return
+    
+    # Find a model that will fit
+    model_id, reason = find_loadable_model(vram_gb, is_amd)
+    
+    if model_id is None:
+        print(f"❌ {reason}")
+        return
+    
+    # Load it safely
+    tokenizer, model, device = load_model_safely(model_id, vram_gb, is_amd)
+    
+    if tokenizer and model:
+        print("✅ Model loaded successfully!")
+        # Continue with inference...
+    else:
+        print("❌ Failed to load model")
 
 def main():
     """Enhanced main function with cached model detection"""
