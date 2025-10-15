@@ -621,7 +621,7 @@ def load_model_with_gpu_config(gpu_manager: GPUManager):
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=torch.float32,  # Always float32 for AMD
-                device_map=None,
+                device_map="auto",
                 trust_remote_code=True,
                 low_cpu_mem_usage=True
             )
