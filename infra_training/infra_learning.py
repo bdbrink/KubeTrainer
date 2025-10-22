@@ -650,7 +650,7 @@ def load_model_with_gpu_config(gpu_manager: GPUManager):
         load_time = time.time() - start_time
         print(f"✅ Model loaded successfully in {load_time:.2f} seconds")
         
-        return tokenizer, model, actual_device
+        return tokenizer, model, actual_device, model_name
         
     except Exception as e:
         print(f"❌ Error loading {model_name}: {e}")
@@ -959,6 +959,11 @@ def load_cached_model_info(model_info_file="./model_info.pkl"):
         try:
             with open(model_info_file, 'rb') as f:
                 model_info = pickle.load(f)
+            
+            # Show which model was cached
+            if 'model_id' in model_info:
+                print(f"📝 Cached model: {model_info['model_id']}")
+            
             print(f"✅ Loaded cached model successfully")
             return model_info
         except Exception as e:
@@ -1045,7 +1050,7 @@ def load_model_safely(model_id: str, vram_gb: float, is_amd: bool = False):
             model = model.to("cuda")
         
         print(f"   ✅ Successfully loaded on {device}")
-        return tokenizer, model, device
+        return tokenizer, model, device, model_id
         
     except RuntimeError as e:
         print(f"   ❌ OOM Error during loading: {e}")
@@ -1123,10 +1128,10 @@ def main():
         enhanced_system_check(gpu_manager)
         
         # Load model with GPU-optimized config
-        tokenizer, model, device = load_model_with_gpu_config(gpu_manager)
+        tokenizer, model, device, model_id = load_model_with_gpu_config(gpu_manager)
         
         # Save model info for future runs
-        model_info_file = save_model_info(tokenizer, model, device, gpu_manager)
+        model_info_file = save_model_info(tokenizer, model, device, gpu_manager, model_id)
     
     if tokenizer and model:
         # Run inference test (with AMD GPU error handling)
@@ -1145,7 +1150,7 @@ def main():
         
         # Save model info if it's fresh (for future runs)
         if not cached_model_info:
-            model_info_file = save_model_info(tokenizer, model, device, gpu_manager)
+            model_info_file = save_model_info(tokenizer, model, device, gpu_manager, model_id)
         else:
             model_info_file = "./model_info.pkl"
         
