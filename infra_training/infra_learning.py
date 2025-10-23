@@ -196,6 +196,7 @@ class HuggingFaceModelSelector:
             ModelCandidate("Qwen/Qwen2-1.5B-Instruct", 3, 400000, ["general"]),
         ]
     
+    
     def _get_actual_model_size(self, model_id: str) -> float:
         """Get actual model size from HuggingFace API"""
         try:
@@ -1063,6 +1064,73 @@ def load_model_safely(model_id: str, vram_gb: float, is_amd: bool = False):
     except Exception as e:
         print(f"   ❌ Error: {e}")
         return None, None, None
+
+
+
+def get_safe_model_size(model_id: str, verbose=False) -> float:
+    """
+    Get model size with multiple verification methods.
+    Returns None if we can't reliably determine size (fail-safe approach).
+    """
+    try:
+        # Method 1: Try HF model card API
+        response = requests.get(
+            f"https://huggingface.co/api/models/{model_id}",
+            timeout=10
+        )
+        if response.ok:
+            data = response.json()
+            
+            # Check for gated model (requires auth)
+            if data.get('gated', False):
+                if verbose:
+                    print(f"  ⚠️ {model_id} is gated (requires authentication)")
+                return None
+            
+            # Look at siblings (actual files)
+            if data.get('siblings'):
+                weights_size = 0
+                for file in data.get('siblings', []):
+                    fname = file.get('rfilename', '').lower()
+                    # Only count model weights, not config/tokenizer
+                    if any(fname.endswith(ext) for ext in ['.safetensors', '.bin', '.pt', '.pth']):
+                        weights_size += file.get('size', 0)
+                
+                if weights_size > 0:
+                    size_gb = weights_size / (1024**3)
+                    if verbose:
+                        print(f"  ✓ HF API: {size_gb:.2f}GB")
+                    return size_gb
+    except Exception as e:
+        if verbose:
+            print(f"  ✗ HF API failed: {e}")
+    
+    # Method 2: Pattern matching (fallback, but less reliable)
+    patterns = {
+        '405b': 810, '400b': 800,
+        '175b': 350, '176b': 352,
+        '70b': 140, '65b': 130, '60b': 120,
+        '34b': 68, '33b': 66, '32b': 64,
+        '30b': 60, '20b': 40,
+        '15b': 30, '14b': 28, '13b': 26,
+        '12b': 24, '11b': 22, '10b': 20,
+        '8b': 16, '7b': 14, '6.7b': 13.4,
+        '3b': 6, '2.7b': 5.4, '2b': 4,
+        '1.5b': 3, '1.3b': 2.6, '1b': 2,
+        '0.5b': 1, '500m': 1
+    }
+    
+    model_lower = model_id.lower()
+    for pattern, size_gb in sorted(patterns.items(), key=lambda x: len(x[0]), reverse=True):
+        if pattern in model_lower:
+            if verbose:
+                print(f"  ✓ Pattern matched: {size_gb:.2f}GB")
+            return float(size_gb)
+    
+    # Can't determine size reliably
+    if verbose:
+        print(f"  ✗ Could not determine size")
+    return None
 
 def main_oom_safe():
     gpu_manager = GPUManager()
