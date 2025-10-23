@@ -963,6 +963,8 @@ def load_cached_model_info(model_info_file="./model_info.pkl"):
             # Show which model was cached
             if 'model_id' in model_info:
                 print(f"📝 Cached model: {model_info['model_id']}")
+            else:
+                print(f"⚠️ Model ID not found in cache (old cache format)")
             
             print(f"✅ Loaded cached model successfully")
             return model_info
@@ -1111,6 +1113,10 @@ def main():
     
     if cached_model_info and use_cache:
         print("\n✅ Using cached model")
+        # Show which model is cached
+        if 'model_id' in cached_model_info:
+            print(f"📝 Model: {cached_model_info['model_id']}")
+
         tokenizer = cached_model_info['tokenizer']
         model = cached_model_info['model']
         device = cached_model_info['device']
