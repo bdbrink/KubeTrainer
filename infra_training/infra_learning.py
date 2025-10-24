@@ -159,14 +159,22 @@ class HuggingFaceModelSelector:
         """Estimate model size from ID"""
         model_id_lower = model_id.lower()
         
-        # Size patterns in GB (accounting for fp32)
+        # Size patterns in GB (accounting for fp16 - 2 bytes per param)
+        # Sorted by size descending to match larger models first
         patterns = {
+            '405b': 810, '400b': 800,
+            '175b': 350, '176b': 352,
+            '70b': 140, '65b': 130, '60b': 120,
             '34b': 68, '33b': 66, '32b': 64,
+            '30b': 60, '20b': 40,
             '15b': 30, '14b': 28, '13b': 26,
+            '12b': 24, '11b': 22, '10b': 20,
             '8b': 16, '7b': 14, '6.7b': 13.4,
-            '3b': 6, '2.7b': 5.4, '1.5b': 3, '1.3b': 2.6,
+            '3b': 6, '2.7b': 5.4, '2b': 4,
+            '1.5b': 3, '1.3b': 2.6, '1b': 2,
             '0.5b': 1, '500m': 1
         }
+
         
         for pattern, size in patterns.items():
             if pattern in model_id_lower:
