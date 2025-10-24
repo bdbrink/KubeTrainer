@@ -585,37 +585,60 @@ def enhanced_system_check(gpu_manager: GPUManager):
     print()
 
 def load_model_with_gpu_config(gpu_manager: GPUManager):
-    """Load model using GPU manager's recommended configuration with AMD GPU support"""
-    print("🤖 Loading Model with Optimized Configuration")
+    """Load model using GPU manager's recommended configuration"""
+    print("\n🤖 Loading Model with Optimized Configuration")
     print("=" * 60)
     
-    # Get recommended model and config
     model_size, model_name = gpu_manager.get_recommended_model_size()
     device_config = gpu_manager.get_torch_device_config()
 
-
-    # ✨ Check system RAM before loading
     system_ram_gb = psutil.virtual_memory().available / (1024**3)
     selector = HuggingFaceModelSelector()
     estimated_size = selector._estimate_size(model_name)
     
-    if estimated_size * 1.5 > system_ram_gb:
-        print(f"⚠️ Insufficient RAM! Model needs ~{estimated_size * 1.5:.1f}GB, only {system_ram_gb:.1f}GB available")
+    # For fp32, we need 2x the fp16 size
+    if device_config['torch_dtype'] == torch.float32:
+        estimated_size *= 2
     
     print(f"Selected Model: {model_name}")
-    print(f"Estimated Size: {estimated_size:.1f}GB")
-    print(f"Device Config: {device_config['device']} | {device_config['torch_dtype']}")
+    print(f"Estimated Size: {estimated_size:.1f}GB ({device_config['torch_dtype']})")
+    print(f"Available RAM: {system_ram_gb:.1f}GB")
+    print(f"Device Config: {device_config['device']}")
     
-    # AMD-specific info
+    # Check if we have enough RAM
+    if estimated_size * 1.3 > system_ram_gb:  # Need 30% overhead
+        print(f"\n❌ CRITICAL: Not enough RAM!")
+        print(f"   Model needs: ~{estimated_size * 1.3:.1f}GB")
+        print(f"   Available: {system_ram_gb:.1f}GB")
+        print(f"   Shortfall: {(estimated_size * 1.3 - system_ram_gb):.1f}GB")
+        
+        # Try to find a smaller model
+        print(f"\n🔍 Searching for smaller model...")
+        vram_gb = gpu_manager.gpu_info.get('vram_gb', 0)
+        is_amd = gpu_manager.is_amd_gpu()
+        safety = 0.55 if is_amd else 0.75
+        
+        # Look for models that fit in RAM
+        candidates = selector.search_sre_models()
+        
+        for candidate in sorted(candidates, key=lambda x: x.size_gb):
+            ram_needed = candidate.size_gb * 2 * 1.3  # fp32 + overhead
+            if ram_needed < system_ram_gb and candidate.size_gb < vram_gb * safety:
+                print(f"✅ Found alternative: {candidate.model_id} ({candidate.size_gb:.1f}GB)")
+                model_name = candidate.model_id
+                estimated_size = candidate.size_gb * 2  # fp32
+                break
+        else:
+            print(f"❌ No suitable model found for available RAM")
+            return None, None, None, None
+    
     if gpu_manager.is_amd_gpu():
         print("🔧 AMD GPU: Attempting GPU loading with conservative settings")
         print("💡 If loading fails, we'll try progressively safer approaches")
     
     start_time = time.time()
     
-    # Try loading with requested config first
     try:
-        # Load tokenizer
         print("📝 Loading tokenizer...")
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         if tokenizer.pad_token is None:
@@ -623,30 +646,40 @@ def load_model_with_gpu_config(gpu_manager: GPUManager):
         
         print(f"🧠 Loading model on {device_config['device']}...")
         
-        # For AMD, try a very conservative approach
         if gpu_manager.is_amd_gpu() and device_config['device'] == 'cuda':
-            # Load on CPU first, then try to move to GPU
-            print("🔧 AMD GPU: Loading on CPU first, then moving to GPU...")
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=torch.float32,  # Always float32 for AMD
-                device_map="auto",
-                trust_remote_code=True,
-                low_cpu_mem_usage=True
-            )
-            
-            # Now try to move to GPU piece by piece
+            print("🔧 AMD GPU: Loading directly to GPU (no device_map)...")
             try:
+                # For AMD, load directly to GPU without device_map
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float32,
+                    device_map=None,  # Don't use auto device mapping
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=False  # Load directly
+                )
+                
+                # Now move to GPU
                 print("🔧 Moving model to AMD GPU...")
                 model = model.to('cuda')
                 actual_device = 'cuda'
-                print("✅ Successfully moved to AMD GPU!")
-            except Exception as gpu_error:
-                print(f"⚠️ Failed to move to AMD GPU: {gpu_error}")
-                print("🔧 Keeping model on CPU")
-                actual_device = 'cpu'
+                print("✅ Successfully loaded to AMD GPU!")
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    print(f"⚠️ OOM on AMD GPU - model too large for VRAM")
+                    print("🔧 Falling back to CPU...")
+                    # Reload on CPU
+                    model = AutoModelForCausalLM.from_pretrained(
+                        model_name,
+                        torch_dtype=torch.float32,
+                        device_map=None,
+                        trust_remote_code=True,
+                        low_cpu_mem_usage=True
+                    )
+                    actual_device = 'cpu'
+                else:
+                    raise e
         else:
-            # NVIDIA or CPU loading
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=device_config['torch_dtype'],
@@ -664,58 +697,36 @@ def load_model_with_gpu_config(gpu_manager: GPUManager):
     except Exception as e:
         print(f"❌ Error loading {model_name}: {e}")
         
-        # For AMD GPU, try smaller model before giving up
-        if gpu_manager.is_amd_gpu():
-            print("💡 Trying smaller model for AMD GPU...")
-            fallback_model = "Qwen/Qwen2-0.5B-Instruct"
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(fallback_model, trust_remote_code=True)
-                if tokenizer.pad_token is None:
-                    tokenizer.pad_token = tokenizer.eos_token
-                    
-                # Try GPU first
+        # Try smallest possible fallback
+        print("💡 Trying smallest available model...")
+        fallback_model = "Qwen/Qwen2-0.5B-Instruct"
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(fallback_model, trust_remote_code=True)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+                
+            model = AutoModelForCausalLM.from_pretrained(
+                fallback_model,
+                torch_dtype=torch.float32,
+                trust_remote_code=True,
+                low_cpu_mem_usage=True
+            )
+            
+            # Try GPU if AMD
+            if gpu_manager.is_amd_gpu() and torch.cuda.is_available():
                 try:
-                    print(f"🔧 Loading {fallback_model} on AMD GPU...")
-                    model = AutoModelForCausalLM.from_pretrained(
-                        fallback_model,
-                        torch_dtype=torch.float32,
-                        trust_remote_code=True,
-                        low_cpu_mem_usage=True
-                    ).to('cuda')
-                    print(f"✅ Small model loaded on AMD GPU!")
-                    return tokenizer, model, "cuda"
-                except Exception as gpu_error:
-                    print(f"⚠️ AMD GPU failed even with small model: {gpu_error}")
-                    # Final fallback to CPU
-                    model = AutoModelForCausalLM.from_pretrained(
-                        fallback_model,
-                        torch_dtype=torch.float32,
-                        trust_remote_code=True,
-                        low_cpu_mem_usage=True
-                    )
-                    print(f"✅ Small model loaded on CPU")
-                    return tokenizer, model, "cpu"
-                    
-            except Exception as fallback_error:
-                print(f"❌ All fallbacks failed: {fallback_error}")
-                return None, None, None
-        else:
-            # Standard fallback for other GPUs
-            print("💡 Falling back to smallest model on CPU...")
-            fallback_model = "Qwen/Qwen2-0.5B-Instruct"
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(fallback_model, trust_remote_code=True)
-                model = AutoModelForCausalLM.from_pretrained(
-                    fallback_model,
-                    torch_dtype=torch.float32,
-                    trust_remote_code=True,
-                    low_cpu_mem_usage=True
-                )
-                print(f"✅ Fallback model loaded on CPU")
-                return tokenizer, model, "cpu"
-            except Exception as fallback_error:
-                print(f"❌ Fallback also failed: {fallback_error}")
-                return None, None, None
+                    model = model.to('cuda')
+                    print(f"✅ Fallback model loaded on AMD GPU!")
+                    return tokenizer, model, "cuda", fallback_model
+                except:
+                    pass
+            
+            print(f"✅ Fallback model loaded on CPU")
+            return tokenizer, model, "cpu", fallback_model
+                
+        except Exception as fallback_error:
+            print(f"❌ All fallbacks failed: {fallback_error}")
+            return None, None, None, None
 
 def optimized_inference_test(tokenizer, model, device, gpu_manager: GPUManager):
     """Run inference test with progressive AMD GPU fallback strategies"""
