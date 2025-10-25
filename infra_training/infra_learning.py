@@ -254,9 +254,10 @@ class HuggingFaceModelSelector:
 
     def recommend_for_hardware(self, vram_gb: float, gpu_type: str) -> Tuple[str, str]:
         """Get best model for hardware specs"""
-        if self.cached_model is not None:
-            print("\n📦 Using cached model candidates")
-            return self.cached_model, self.cached_reason
+        # DISABLED: Don't use cache, always recalculate with latest constraints
+        # if self.cached_model is not None:
+        #     print("\n📦 Using cached model recommendation")
+        #     return self.cached_model, self.cached_reason
 
         candidates = self.search_sre_models()
         
@@ -264,20 +265,32 @@ class HuggingFaceModelSelector:
         safety = 0.55 if 'amd' in gpu_type.lower() else 0.75
         usable_vram = vram_gb * safety
 
-        # Get actual sizes for candidates
+        # Get actual sizes for candidates with better error handling
         print("🔍 Checking actual model sizes...")
-        for candidate in candidates[:10]:  # Only check top 10 to save time
+        for candidate in candidates[:10]:
             actual_size = self._get_actual_model_size(candidate.model_id)
-            if actual_size != candidate.size_gb:
+            if actual_size > 0 and actual_size != candidate.size_gb:
                 print(f"📏 {candidate.model_id}: {actual_size:.1f}GB (was {candidate.size_gb:.1f}GB)")
                 candidate.size_gb = actual_size
+            elif actual_size <= 0:
+                # Estimation failed, re-estimate more carefully
+                candidate.size_gb = self._estimate_size(candidate.model_id)
+                print(f"⚠️ {candidate.model_id}: Using estimated {candidate.size_gb:.1f}GB")
         
-        # Filter models that fit
-        fitting = [m for m in candidates if m.size_gb <= usable_vram]
+        # CRITICAL: Account for fp32 (2x size) and loading overhead (1.5x)
+        # For AMD GPU, we use fp32, so model size * 2 * 1.5 = 3x the base size
+        is_amd = 'amd' in gpu_type.lower()
+        size_multiplier = 2.0 if is_amd else 1.5  # fp32 + overhead for AMD, just overhead for NVIDIA
+        
+        # Filter models that fit with loading overhead
+        fitting = [m for m in candidates if (m.size_gb * size_multiplier) <= usable_vram]
         
         if not fitting:
-            return ("deepseek-ai/deepseek-coder-1.3b-instruct", 
-                   "Smallest available (fallback)")
+            # If nothing fits, find the absolute smallest
+            smallest = min(candidates, key=lambda m: m.size_gb)
+            print(f"\n⚠️ No models fit in {usable_vram:.1f}GB usable VRAM")
+            print(f"   Returning smallest available: {smallest.model_id} ({smallest.size_gb:.1f}GB)")
+            return (smallest.model_id, f"Smallest available ({smallest.size_gb:.1f}GB base)")
         
         # Sort by size (bigger is better, if it fits)
         fitting.sort(key=lambda m: (m.size_gb, m.downloads), reverse=True)
@@ -286,15 +299,18 @@ class HuggingFaceModelSelector:
         
         # Show options
         print(f"\n📊 Top models for {vram_gb:.1f}GB VRAM ({gpu_type}):")
+        print(f"   Usable VRAM after safety margin: {usable_vram:.1f}GB")
+        print(f"   Size multiplier for loading: {size_multiplier}x")
+        print()
         for i, model in enumerate(fitting[:5], 1):
             marker = "👉" if i == 1 else "  "
+            needed_vram = model.size_gb * size_multiplier
             print(f"{marker} {i}. {model.model_id}")
-            print(f"      {model.size_gb:.1f}GB, {model.downloads:,} downloads")
+            print(f"      Base: {model.size_gb:.1f}GB | Needs: {needed_vram:.1f}GB VRAM | Downloads: {model.downloads:,}")
         
-        # Optional: Let user choose
         print(f"\n✅ Auto-selected: {best.model_id}")
         try:
-            choice = input("Press Enter to accept, or enter number to choose different model: ").strip()
+            choice = input("Press Enter to accept, or enter number (1-5) to choose different model: ").strip()
             if choice.isdigit():
                 idx = int(choice) - 1
                 if 0 <= idx < len(fitting):
@@ -303,7 +319,10 @@ class HuggingFaceModelSelector:
         except (KeyboardInterrupt, EOFError):
             pass
         
-        reason = f"{best.size_gb:.1f}GB model with {best.downloads:,} downloads"
+        needed_vram = best.size_gb * size_multiplier
+        reason = f"{best.size_gb:.1f}GB base (needs {needed_vram:.1f}GB with overhead), {best.downloads:,} downloads"
+        
+        # Cache the result
         self.cached_model = best.model_id
         self.cached_reason = reason
 
