@@ -71,10 +71,14 @@ class HuggingFaceModelSelector:
         ]
         
         search_queries = [
+            "qwen2.5-3b instruct",      # Target 3B models
+            "qwen2-3b instruct",         # Alternative 3B
             "deepseek-r1 instruct",
-            "qwen2.5 reasoning", 
-            "llama-3 instruct",
-            "mistral instruct"
+            "qwen2.5 coder",             # Coder models
+            "llama-3.2-3b instruct",     # Llama 3B
+            "phi-3 instruct",            # Microsoft Phi-3
+            "mistral instruct",
+            "qwen2.5 reasoning"
         ]
         
         all_candidates = []
@@ -280,7 +284,7 @@ class HuggingFaceModelSelector:
         # CRITICAL: Account for fp32 (2x size) and loading overhead (1.5x)
         # For AMD GPU, we use fp32, so model size * 2 * 1.5 = 3x the base size
         is_amd = 'amd' in gpu_type.lower()
-        size_multiplier = 2.0 if is_amd else 1.5  # fp32 + overhead for AMD, just overhead for NVIDIA
+        size_multiplier = 1.8 if is_amd else 1.5  # fp32 + overhead for AMD, just overhead for NVIDIA
         
         # Filter models that fit with loading overhead
         fitting = [m for m in candidates if (m.size_gb * size_multiplier) <= usable_vram]
