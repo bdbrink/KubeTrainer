@@ -254,10 +254,10 @@ class HuggingFaceModelSelector:
 
     def recommend_for_hardware(self, vram_gb: float, gpu_type: str) -> Tuple[str, str]:
         """Get best model for hardware specs"""
-        # DISABLED: Don't use cache, always recalculate with latest constraints
-        # if self.cached_model is not None:
-        #     print("\n📦 Using cached model recommendation")
-        #     return self.cached_model, self.cached_reason
+
+        if self.cached_model is not None:
+            print("\n📦 Using cached model recommendation")
+            return self.cached_model, self.cached_reason
 
         candidates = self.search_sre_models()
         
