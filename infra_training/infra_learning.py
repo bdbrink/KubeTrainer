@@ -266,7 +266,7 @@ class HuggingFaceModelSelector:
         candidates = self.search_sre_models()
         
         # AMD needs more safety margin due to ROCm overhead
-        safety = 0.55 if 'amd' in gpu_type.lower() else 0.75
+        safety = 0.75 if 'amd' in gpu_type.lower() else 0.8
         usable_vram = vram_gb * safety
 
         # Get actual sizes for candidates with better error handling
@@ -284,7 +284,7 @@ class HuggingFaceModelSelector:
         # CRITICAL: Account for fp32 (2x size) and loading overhead (1.5x)
         # For AMD GPU, we use fp32, so model size * 2 * 1.5 = 3x the base size
         is_amd = 'amd' in gpu_type.lower()
-        size_multiplier = 1.8 if is_amd else 1.5  # fp32 + overhead for AMD, just overhead for NVIDIA
+        size_multiplier = 1.5 if is_amd else 1.3  # fp32 + overhead for AMD, just overhead for NVIDIA
         
         # Filter models that fit with loading overhead
         fitting = [m for m in candidates if (m.size_gb * size_multiplier) <= usable_vram]
