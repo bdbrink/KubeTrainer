@@ -550,12 +550,11 @@ class GPUManager:
                     "device_map": "auto"
                 })
             elif ('amd' in gpu_type or 'radeon' in gpu_type):
-                # AMD GPU detected - try to use it but with very conservative settings
                 if torch.cuda.is_available():  # ROCm uses CUDA API
                     print("🔧 AMD GPU detected - attempting to use with ultra-conservative settings")
                     config.update({
                         "device": "cuda",
-                        "torch_dtype": torch.float32,  # Always float32 for AMD
+                        "torch_dtype": torch.float16,  # Always float32 for AMD
                         "device_map": None,  # Never use auto device mapping
                         "low_cpu_mem_usage": True,
                         "attn_implementation": None  # Disable attention optimizations
