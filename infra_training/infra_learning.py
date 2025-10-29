@@ -13,6 +13,7 @@ import subprocess
 import json
 import sys
 import pickle
+import re
 import requests
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
@@ -937,27 +938,41 @@ def enhanced_memory_monitoring(gpu_manager: GPUManager):
     else:
         print("No ML-capable GPU detected")
 
-def save_model_info(tokenizer, model, device, gpu_manager, output_file="./model_info.pkl"):
+def save_model_info(model_id, tokenizer, model, device, gpu_manager=None, output_dir="models"):
     """Save model information for the RAG/Fine-tuning pipeline"""
+
     print(f"\n💾 Saving model info for RAG/Fine-tuning pipeline...")
-    
+
+    gpu_info = getattr(gpu_manager, "gpu_info", {"device": str(device)})
+    batch_size = getattr(gpu_manager, "get_optimal_batch_size", lambda: 1)()
+    use_mixed_precision = getattr(gpu_manager, "should_use_mixed_precision", lambda: False)()
+
     model_info = {
-        'model': model,
-        'tokenizer': tokenizer,
-        'device': device,
-        'gpu_info': gpu_manager.gpu_info,
-        'batch_size': gpu_manager.get_optimal_batch_size(),
-        'use_mixed_precision': gpu_manager.should_use_mixed_precision(),
+        "model_id": model_id,
+        "model": model,
+        "tokenizer": tokenizer,
+        "device": device,
+        "gpu_info": gpu_info,
+        "batch_size": batch_size,
+        "use_mixed_precision": use_mixed_precision,
     }
-    
+
+    # sanitize model_id for filesystem
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", model_id or "unknown_model")
+    save_dir = os.path.join(output_dir, safe_name)
+    os.makedirs(save_dir, exist_ok=True)
+
+    save_path = os.path.join(save_dir, "model_info.pkl")
+
     try:
-        with open(output_file, 'wb') as f:
+        with open(save_path, "wb") as f:
             pickle.dump(model_info, f)
-        print(f"✅ Model info saved to {output_file}")
-        return output_file
+        print(f"💾 Saved model info to {save_path}")
+        return save_path
     except Exception as e:
         print(f"❌ Failed to save model info: {e}")
         return None
+
 
 def launch_rag_pipeline(model_info_file, mode="both", test=True):
     """Launch the RAG/Fine-tuning pipeline with saved model info"""
@@ -1204,6 +1219,9 @@ def main():
     """Enhanced main function with cached model detection"""
     print("🎯 Enhanced SRE AI Training - Full Pipeline (AMD GPU Compatible)")
     print("=" * 70)
+
+    # 🔧 ensure model_id always exists (even if using cache)
+    model_id = None
     
     # Try to load cached model first
     cached_model_info = load_cached_model_info("./model_info.pkl")
@@ -1222,17 +1240,16 @@ def main():
     
     if cached_model_info and use_cache:
         print("\n✅ Using cached model")
-        # Show which model is cached
         if 'model_id' in cached_model_info:
-            print(f"📝 Model: {cached_model_info['model_id']}")
+            model_id = cached_model_info['model_id']
+            print(f"📝 Model: {model_id}")
 
         tokenizer = cached_model_info['tokenizer']
         model = cached_model_info['model']
         device = cached_model_info['device']
-        
-        # Reconstruct GPU manager info from cache
+
         gpu_manager = GPUManager()
-        gpu_manager.gpu_info = cached_model_info['gpu_info']
+        gpu_manager.gpu_info = cached_model_info.get('gpu_info', {"device": str(device)})
         
     else:
         # Initialize GPU manager if not using cache
@@ -1246,7 +1263,7 @@ def main():
         tokenizer, model, device, model_id = load_model_with_gpu_config(gpu_manager)
         
         # Save model info for future runs
-        model_info_file = save_model_info(tokenizer, model, device, gpu_manager, model_id)
+        model_info_file = save_model_info(model_id, tokenizer, model, device, gpu_manager)
     
     if tokenizer and model:
         # Run inference test (with AMD GPU error handling)
@@ -1265,7 +1282,7 @@ def main():
         
         # Save model info if it's fresh (for future runs)
         if not cached_model_info:
-            model_info_file = save_model_info(tokenizer, model, device, gpu_manager, model_id)
+            model_info_file = save_model_info(model_id, tokenizer, model, device, gpu_manager)
         else:
             model_info_file = "./model_info.pkl"
         
