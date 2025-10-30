@@ -1009,28 +1009,46 @@ def launch_rag_pipeline(model_info_file, mode="both", test=True):
         print(f"❌ Python interpreter not found: {sys.executable}")
         return False
 
-def load_cached_model_info(model_info_file="./model_info.pkl"):
-    """Load model info from cached pkl file"""
-    if Path(model_info_file).exists():
-        print(f"📦 Found cached model: {model_info_file}")
-        try:
-            with open(model_info_file, 'rb') as f:
-                model_info = pickle.load(f)
-            
-            # Show which model was cached
-            if 'model_id' in model_info:
-                print(f"📝 Cached model: {model_info['model_id']}")
-            else:
-                print(f"⚠️ Model ID not found in cache (old cache format)")
-            
-            print(f"✅ Loaded cached model successfully")
-            return model_info
-        except Exception as e:
-            print(f"⚠️ Failed to load cached model: {e}")
-            print(f"🔄 Will load fresh model instead")
-            return None
-    else:
-        print(f"📦 No cached model found at {model_info_file}")
+def load_cached_model_info(models_dir="./models"):
+    """Load model info from cached pkl file in models directory"""
+    models_path = Path(models_dir)
+    
+    if not models_path.exists():
+        print(f"📦 Models directory not found at {models_dir}")
+        return None
+    
+    # Look for model_info.pkl files in the models directory
+    pkl_files = list(models_path.glob("*/model_info.pkl"))
+    
+    if not pkl_files:
+        # Also check root of models directory
+        root_pkl = models_path / "model_info.pkl"
+        if root_pkl.exists():
+            pkl_files = [root_pkl]
+    
+    if not pkl_files:
+        print(f"📦 No cached model found in {models_dir}")
+        return None
+    
+    # If multiple pkl files, use the most recent one
+    model_info_file = max(pkl_files, key=lambda p: p.stat().st_mtime)
+    
+    print(f"📦 Found cached model: {model_info_file}")
+    try:
+        with open(model_info_file, 'rb') as f:
+            model_info = pickle.load(f)
+        
+        # Show which model was cached
+        if 'model_id' in model_info:
+            print(f"📝 Cached model: {model_info['model_id']}")
+        else:
+            print(f"⚠️ Model ID not found in cache (old cache format)")
+        
+        print(f"✅ Loaded cached model successfully")
+        return model_info
+    except Exception as e:
+        print(f"⚠️ Failed to load cached model: {e}")
+        print(f"🔄 Will load fresh model instead")
         return None
 
 def can_fit_model(model_size_gb: float, vram_gb: float, is_amd: bool = False) -> Tuple[bool, str]:
