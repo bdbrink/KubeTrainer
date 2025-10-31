@@ -1030,10 +1030,35 @@ def load_cached_model_info(models_dir="./models"):
         print(f"📦 No cached model found in {models_dir}")
         return None
     
-    # If multiple pkl files, use the most recent one
-    model_info_file = max(pkl_files, key=lambda p: p.stat().st_mtime)
+    # If multiple pkl files, let user choose
+    if len(pkl_files) > 1:
+        print(f"\n📦 Found {len(pkl_files)} cached models:")
+        for idx, pkl_file in enumerate(pkl_files, 1):
+            # Try to extract model name from path
+            model_name = pkl_file.parent.name if pkl_file.parent != models_path else "root"
+            mod_time = pkl_file.stat().st_mtime
+            from datetime import datetime
+            mod_date = datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d %H:%M:%S')
+            print(f"  [{idx}] {model_name} (modified: {mod_date})")
+        
+        while True:
+            try:
+                choice = input(f"\n🎯 Choose a model (1-{len(pkl_files)}) or 'q' to quit: ").strip()
+                if choice.lower() == 'q':
+                    print("❌ Model loading cancelled")
+                    return None
+                choice_idx = int(choice) - 1
+                if 0 <= choice_idx < len(pkl_files):
+                    model_info_file = pkl_files[choice_idx]
+                    break
+                else:
+                    print(f"⚠️ Please enter a number between 1 and {len(pkl_files)}")
+            except ValueError:
+                print(f"⚠️ Please enter a valid number or 'q' to quit")
+    else:
+        model_info_file = pkl_files[0]
     
-    print(f"📦 Found cached model: {model_info_file}")
+    print(f"\n📦 Loading cached model: {model_info_file}")
     try:
         with open(model_info_file, 'rb') as f:
             model_info = pickle.load(f)
