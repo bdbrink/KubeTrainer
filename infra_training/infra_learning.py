@@ -1267,7 +1267,7 @@ def main():
     model_id = None
     
     # Try to load cached model first
-    cached_model_info = load_cached_model_info("./model_info.pkl")
+    cached_model_info = load_cached_model_info("./models")
     
     use_cache = True
     if cached_model_info:
