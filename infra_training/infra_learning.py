@@ -1033,28 +1033,41 @@ def load_cached_model_info(models_dir="./models"):
     # If multiple pkl files, let user choose
     if len(pkl_files) > 1:
         print(f"\n📦 Found {len(pkl_files)} cached models:")
-        for idx, pkl_file in enumerate(pkl_files, 1):
-            # Try to extract model name from path
+        
+        # Create a mapping of model names to pkl files
+        model_map = {}
+        for pkl_file in pkl_files:
             model_name = pkl_file.parent.name if pkl_file.parent != models_path else "root"
+            model_map[model_name.lower()] = pkl_file
             mod_time = pkl_file.stat().st_mtime
             from datetime import datetime
             mod_date = datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d %H:%M:%S')
-            print(f"  [{idx}] {model_name} (modified: {mod_date})")
+            print(f"  • {model_name} (modified: {mod_date})")
         
         while True:
-            try:
-                choice = input(f"\n🎯 Choose a model (1-{len(pkl_files)}) or 'q' to quit: ").strip()
-                if choice.lower() == 'q':
-                    print("❌ Model loading cancelled")
-                    return None
-                choice_idx = int(choice) - 1
-                if 0 <= choice_idx < len(pkl_files):
-                    model_info_file = pkl_files[choice_idx]
+            choice = input(f"\n🎯 Enter model name or 'q' to quit: ").strip()
+            if choice.lower() == 'q':
+                print("❌ Model loading cancelled")
+                return None
+            
+            # Try to find matching model (case-insensitive)
+            if choice.lower() in model_map:
+                model_info_file = model_map[choice.lower()]
+                break
+            else:
+                # Try partial matching
+                matches = [name for name in model_map.keys() if choice.lower() in name]
+                if len(matches) == 1:
+                    model_info_file = model_map[matches[0]]
+                    print(f"✅ Matched to: {matches[0]}")
                     break
+                elif len(matches) > 1:
+                    print(f"⚠️ Multiple matches found: {', '.join(matches)}")
+                    print(f"   Please be more specific")
                 else:
-                    print(f"⚠️ Please enter a number between 1 and {len(pkl_files)}")
-            except ValueError:
-                print(f"⚠️ Please enter a valid number or 'q' to quit")
+                    print(f"⚠️ Model '{choice}' not found. Available models:")
+                    for name in model_map.keys():
+                        print(f"   • {name}")
     else:
         model_info_file = pkl_files[0]
     
