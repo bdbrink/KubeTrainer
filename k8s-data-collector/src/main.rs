@@ -1,0 +1,297 @@
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use kube::{
+    api::{Api, ListParams},
+    Client,
+};
+use k8s_openapi::api::{
+    apps::v1::{Deployment, StatefulSet, DaemonSet},
+    core::v1::{Pod, Event, Node, PersistentVolumeClaim, Service},
+    batch::v1::Job,
+};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use tracing::{info, warn};
+
+mod collectors;
+mod exporters;
+mod models;
+
+use collectors::*;
+use exporters::*;
+use models::*;
+
+#[derive(Parser)]
+#[command(author, version, about = "K8s Data Collector for SRE AI Training")]
+struct Cli {
+    /// Output directory for collected data
+    #[arg(short, long, default_value = "./training_data")]
+    output_dir: PathBuf,
+
+    /// Kubernetes namespace (empty = all namespaces)
+    #[arg(short, long)]
+    namespace: Option<String>,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "jsonl")]
+    format: OutputFormat,
+
+    /// Kubeconfig path (uses default if not specified)
+    #[arg(short, long)]
+    kubeconfig: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Collect all available data
+    All {
+        /// Include historical events
+        #[arg(long)]
+        include_events: bool,
+    },
+    
+    /// Collect pod information and issues
+    Pods {
+        /// Only failing/problematic pods
+        #[arg(long)]
+        problems_only: bool,
+    },
+    
+    /// Collect deployment configurations
+    Deployments,
+    
+    /// Collect events (warnings, errors)
+    Events {
+        /// Only warning/error events
+        #[arg(long)]
+        problems_only: bool,
+        
+        /// Time window in hours
+        #[arg(long, default_value = "24")]
+        hours: u64,
+    },
+    
+    /// Collect node health and capacity
+    Nodes,
+    
+    /// Generate synthetic SRE scenarios
+    Synthetic {
+        /// Number of scenarios to generate
+        #[arg(short, long, default_value = "100")]
+        count: usize,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum OutputFormat {
+    /// JSON Lines (one JSON object per line)
+    Jsonl,
+    /// CSV format
+    Csv,
+    /// Python pickle-compatible JSON
+    Json,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Initialize logging
+    tracing_subscriber::fmt()
+        .with_env_filter("k8s_data_collector=info")
+        .init();
+
+    let cli = Cli::parse();
+
+    // Create output directory
+    std::fs::create_dir_all(&cli.output_dir)
+        .context("Failed to create output directory")?;
+
+    info!("🚀 K8s Data Collector starting...");
+    info!("📁 Output directory: {:?}", cli.output_dir);
+
+    // Initialize Kubernetes client
+    let client = if let Some(kubeconfig_path) = cli.kubeconfig {
+        let config = kube::Config::from_kubeconfig(&kube::config::KubeConfigOptions {
+            context: None,
+            cluster: None,
+            user: None,
+        })
+        .await?;
+        Client::try_from(config)?
+    } else {
+        Client::try_default().await?
+    };
+
+    info!("✅ Connected to Kubernetes cluster");
+
+    // Execute command
+    match cli.command {
+        Commands::All { include_events } => {
+            collect_all_data(&client, &cli, include_events).await?;
+        }
+        Commands::Pods { problems_only } => {
+            collect_pods(&client, &cli, problems_only).await?;
+        }
+        Commands::Deployments => {
+            collect_deployments(&client, &cli).await?;
+        }
+        Commands::Events { problems_only, hours } => {
+            collect_events(&client, &cli, problems_only, hours).await?;
+        }
+        Commands::Nodes => {
+            collect_nodes(&client, &cli).await?;
+        }
+        Commands::Synthetic { count } => {
+            generate_synthetic_data(&cli, count).await?;
+        }
+    }
+
+    info!("🎉 Data collection complete!");
+    
+    Ok(())
+}
+
+async fn collect_all_data(client: &Client, cli: &Cli, include_events: bool) -> Result<()> {
+    info!("📊 Collecting all cluster data...");
+    
+    collect_pods(client, cli, false).await?;
+    collect_deployments(client, cli).await?;
+    collect_nodes(client, cli).await?;
+    
+    if include_events {
+        collect_events(client, cli, false, 24).await?;
+    }
+    
+    Ok(())
+}
+
+async fn collect_pods(client: &Client, cli: &Cli, problems_only: bool) -> Result<()> {
+    info!("🔍 Collecting pod data...");
+    
+    let pods: Api<Pod> = if let Some(ns) = &cli.namespace {
+        Api::namespaced(client.clone(), ns)
+    } else {
+        Api::all(client.clone())
+    };
+
+    let lp = ListParams::default();
+    let pod_list = pods.list(&lp).await?;
+    
+    let mut training_data = Vec::new();
+    
+    for pod in pod_list {
+        let pod_data = PodTrainingData::from_pod(pod);
+        
+        if problems_only && !pod_data.has_problems() {
+            continue;
+        }
+        
+        training_data.push(TrainingExample::from_pod(pod_data));
+    }
+    
+    let output_path = cli.output_dir.join("pods_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Collected {} pod examples", training_data.len());
+    
+    Ok(())
+}
+
+async fn collect_deployments(client: &Client, cli: &Cli) -> Result<()> {
+    info!("🔍 Collecting deployment data...");
+    
+    let deployments: Api<Deployment> = if let Some(ns) = &cli.namespace {
+        Api::namespaced(client.clone(), ns)
+    } else {
+        Api::all(client.clone())
+    };
+
+    let lp = ListParams::default();
+    let dep_list = deployments.list(&lp).await?;
+    
+    let mut training_data = Vec::new();
+    
+    for deployment in dep_list {
+        let dep_data = DeploymentTrainingData::from_deployment(deployment);
+        training_data.push(TrainingExample::from_deployment(dep_data));
+    }
+    
+    let output_path = cli.output_dir.join("deployments_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Collected {} deployment examples", training_data.len());
+    
+    Ok(())
+}
+
+async fn collect_events(client: &Client, cli: &Cli, problems_only: bool, hours: u64) -> Result<()> {
+    info!("🔍 Collecting event data (last {} hours)...", hours);
+    
+    let events: Api<Event> = if let Some(ns) = &cli.namespace {
+        Api::namespaced(client.clone(), ns)
+    } else {
+        Api::all(client.clone())
+    };
+
+    let lp = ListParams::default();
+    let event_list = events.list(&lp).await?;
+    
+    let cutoff_time = chrono::Utc::now() - chrono::Duration::hours(hours as i64);
+    let mut training_data = Vec::new();
+    
+    for event in event_list {
+        let event_data = EventTrainingData::from_event(event, cutoff_time);
+        
+        if let Some(data) = event_data {
+            if problems_only && !data.is_problem() {
+                continue;
+            }
+            
+            training_data.push(TrainingExample::from_event(data));
+        }
+    }
+    
+    let output_path = cli.output_dir.join("events_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Collected {} event examples", training_data.len());
+    
+    Ok(())
+}
+
+async fn collect_nodes(client: &Client, cli: &Cli) -> Result<()> {
+    info!("🔍 Collecting node data...");
+    
+    let nodes: Api<Node> = Api::all(client.clone());
+    let lp = ListParams::default();
+    let node_list = nodes.list(&lp).await?;
+    
+    let mut training_data = Vec::new();
+    
+    for node in node_list {
+        let node_data = NodeTrainingData::from_node(node);
+        training_data.push(TrainingExample::from_node(node_data));
+    }
+    
+    let output_path = cli.output_dir.join("nodes_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Collected {} node examples", training_data.len());
+    
+    Ok(())
+}
+
+async fn generate_synthetic_data(cli: &Cli, count: usize) -> Result<()> {
+    info!("🎲 Generating {} synthetic SRE scenarios...", count);
+    
+    let training_data = generate_synthetic_scenarios(count);
+    
+    let output_path = cli.output_dir.join("synthetic_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Generated {} synthetic examples", training_data.len());
+    
+    Ok(())
+}
