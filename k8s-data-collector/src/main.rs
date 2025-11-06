@@ -77,6 +77,21 @@ enum Commands {
     /// Collect node health and capacity
     Nodes,
     
+    /// Collect StatefulSets
+    StatefulSets,
+    
+    /// Collect DaemonSets
+    DaemonSets,
+    
+    /// Collect Jobs
+    Jobs,
+    
+    /// Collect Services
+    Services,
+    
+    /// Collect PersistentVolumeClaims
+    Pvcs,
+    
     /// Generate synthetic SRE scenarios
     Synthetic {
         /// Number of scenarios to generate
@@ -143,6 +158,21 @@ async fn main() -> Result<()> {
         Commands::Nodes => {
             collect_nodes(&client, &cli).await?;
         }
+        Commands::StatefulSets => {
+            collect_statefulsets(&client, &cli).await?;
+        }
+        Commands::DaemonSets => {
+            collect_daemonsets(&client, &cli).await?;
+        }
+        Commands::Jobs => {
+            collect_jobs(&client, &cli).await?;
+        }
+        Commands::Services => {
+            collect_services(&client, &cli).await?;
+        }
+        Commands::Pvcs => {
+            collect_pvcs(&client, &cli).await?;
+        }
         Commands::Synthetic { count } => {
             generate_synthetic_data(&cli, count).await?;
         }
@@ -158,6 +188,11 @@ async fn collect_all_data(client: &Client, cli: &Cli, include_events: bool) -> R
     
     collect_pods(client, cli, false).await?;
     collect_deployments(client, cli).await?;
+    collect_statefulsets(client, cli).await?;
+    collect_daemonsets(client, cli).await?;
+    collect_jobs(client, cli).await?;
+    collect_services(client, cli).await?;
+    collect_pvcs(client, cli).await?;
     collect_nodes(client, cli).await?;
     
     if include_events {
@@ -279,6 +314,141 @@ async fn collect_nodes(client: &Client, cli: &Cli) -> Result<()> {
     export_training_data(&training_data, &output_path, &cli.format)?;
     
     info!("✅ Collected {} node examples", training_data.len());
+    
+    Ok(())
+}
+
+async fn collect_statefulsets(client: &Client, cli: &Cli) -> Result<()> {
+    info!("🔍 Collecting StatefulSet data...");
+    
+    let statefulsets: Api<StatefulSet> = if let Some(ns) = &cli.namespace {
+        Api::namespaced(client.clone(), ns)
+    } else {
+        Api::all(client.clone())
+    };
+
+    let lp = ListParams::default();
+    let sts_list = statefulsets.list(&lp).await?;
+    
+    let mut training_data = Vec::new();
+    
+    for sts in sts_list {
+        let sts_data = StatefulSetTrainingData::from_statefulset(sts);
+        training_data.push(TrainingExample::from_statefulset(sts_data));
+    }
+    
+    let output_path = cli.output_dir.join("statefulsets_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Collected {} StatefulSet examples", training_data.len());
+    
+    Ok(())
+}
+
+async fn collect_daemonsets(client: &Client, cli: &Cli) -> Result<()> {
+    info!("🔍 Collecting DaemonSet data...");
+    
+    let daemonsets: Api<DaemonSet> = if let Some(ns) = &cli.namespace {
+        Api::namespaced(client.clone(), ns)
+    } else {
+        Api::all(client.clone())
+    };
+
+    let lp = ListParams::default();
+    let ds_list = daemonsets.list(&lp).await?;
+    
+    let mut training_data = Vec::new();
+    
+    for ds in ds_list {
+        let ds_data = DaemonSetTrainingData::from_daemonset(ds);
+        training_data.push(TrainingExample::from_daemonset(ds_data));
+    }
+    
+    let output_path = cli.output_dir.join("daemonsets_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Collected {} DaemonSet examples", training_data.len());
+    
+    Ok(())
+}
+
+async fn collect_jobs(client: &Client, cli: &Cli) -> Result<()> {
+    info!("🔍 Collecting Job data...");
+    
+    let jobs: Api<Job> = if let Some(ns) = &cli.namespace {
+        Api::namespaced(client.clone(), ns)
+    } else {
+        Api::all(client.clone())
+    };
+
+    let lp = ListParams::default();
+    let job_list = jobs.list(&lp).await?;
+    
+    let mut training_data = Vec::new();
+    
+    for job in job_list {
+        let job_data = JobTrainingData::from_job(job);
+        training_data.push(TrainingExample::from_job(job_data));
+    }
+    
+    let output_path = cli.output_dir.join("jobs_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Collected {} Job examples", training_data.len());
+    
+    Ok(())
+}
+
+async fn collect_services(client: &Client, cli: &Cli) -> Result<()> {
+    info!("🔍 Collecting Service data...");
+    
+    let services: Api<Service> = if let Some(ns) = &cli.namespace {
+        Api::namespaced(client.clone(), ns)
+    } else {
+        Api::all(client.clone())
+    };
+
+    let lp = ListParams::default();
+    let svc_list = services.list(&lp).await?;
+    
+    let mut training_data = Vec::new();
+    
+    for svc in svc_list {
+        let svc_data = ServiceTrainingData::from_service(svc);
+        training_data.push(TrainingExample::from_service(svc_data));
+    }
+    
+    let output_path = cli.output_dir.join("services_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Collected {} Service examples", training_data.len());
+    
+    Ok(())
+}
+
+async fn collect_pvcs(client: &Client, cli: &Cli) -> Result<()> {
+    info!("🔍 Collecting PVC data...");
+    
+    let pvcs: Api<PersistentVolumeClaim> = if let Some(ns) = &cli.namespace {
+        Api::namespaced(client.clone(), ns)
+    } else {
+        Api::all(client.clone())
+    };
+
+    let lp = ListParams::default();
+    let pvc_list = pvcs.list(&lp).await?;
+    
+    let mut training_data = Vec::new();
+    
+    for pvc in pvc_list {
+        let pvc_data = PvcTrainingData::from_pvc(pvc);
+        training_data.push(TrainingExample::from_pvc(pvc_data));
+    }
+    
+    let output_path = cli.output_dir.join("pvcs_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Collected {} PVC examples", training_data.len());
     
     Ok(())
 }
