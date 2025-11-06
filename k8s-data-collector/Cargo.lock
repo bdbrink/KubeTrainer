@@ -738,6 +738,7 @@ dependencies = [
  "csv",
  "k8s-openapi",
  "kube",
+ "rand",
  "serde",
  "serde_json",
  "thiserror",
