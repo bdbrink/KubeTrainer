@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use k8s_openapi::api::{
-    apps::v1::Deployment,
-    core::v1::{Event, Node, Pod},
+    apps::v1::{Deployment, StatefulSet, DaemonSet},
+    core::v1::{Event, Node, Pod, Service, PersistentVolumeClaim},
+    batch::v1::Job,
 };
 use serde::{Deserialize, Serialize};
 
@@ -536,6 +537,506 @@ impl TrainingExample {
                     Severity::Warning
                 },
                 tags: vec!["kubernetes".to_string(), "node".to_string()],
+            },
+            timestamp: Utc::now(),
+        }
+    }
+}
+
+/// StatefulSet-specific training data
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StatefulSetTrainingData {
+    pub name: String,
+    pub namespace: String,
+    pub replicas_desired: i32,
+    pub replicas_ready: i32,
+    pub replicas_current: i32,
+    pub service_name: String,
+    pub conditions: Vec<String>,
+}
+
+impl StatefulSetTrainingData {
+    pub fn from_statefulset(sts: StatefulSet) -> Self {
+        let metadata = sts.metadata;
+        let spec = sts.spec.unwrap_or_default();
+        let status = sts.status.unwrap_or_default();
+        
+        let name = metadata.name.unwrap_or_default();
+        let namespace = metadata.namespace.unwrap_or_else(|| "default".to_string());
+        let replicas_desired = spec.replicas.unwrap_or(1);
+        let service_name = spec.service_name;
+        
+        let replicas_ready = status.ready_replicas.unwrap_or(0);
+        let replicas_current = status.current_replicas.unwrap_or(0);
+        
+        let conditions: Vec<String> = vec![]; // StatefulSet doesn't have conditions like Deployment
+        
+        Self {
+            name,
+            namespace,
+            replicas_desired,
+            replicas_ready,
+            replicas_current,
+            service_name,
+            conditions,
+        }
+    }
+}
+
+/// DaemonSet-specific training data
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DaemonSetTrainingData {
+    pub name: String,
+    pub namespace: String,
+    pub desired_scheduled: i32,
+    pub current_scheduled: i32,
+    pub number_ready: i32,
+    pub number_available: i32,
+    pub number_misscheduled: i32,
+    pub conditions: Vec<String>,
+}
+
+impl DaemonSetTrainingData {
+    pub fn from_daemonset(ds: DaemonSet) -> Self {
+        let metadata = ds.metadata;
+        let status = ds.status.unwrap_or_default();
+        
+        let name = metadata.name.unwrap_or_default();
+        let namespace = metadata.namespace.unwrap_or_else(|| "default".to_string());
+        
+        let desired_scheduled = status.desired_number_scheduled;
+        let current_scheduled = status.current_number_scheduled;
+        let number_ready = status.number_ready;
+        let number_available = status.number_available.unwrap_or(0);
+        let number_misscheduled = status.number_misscheduled;
+        
+        let conditions: Vec<String> = status
+            .conditions
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| c.status == "False")
+            .map(|c| format!("{}: {}", c.type_, c.message.unwrap_or_default()))
+            .collect();
+        
+        Self {
+            name,
+            namespace,
+            desired_scheduled,
+            current_scheduled,
+            number_ready,
+            number_available,
+            number_misscheduled,
+            conditions,
+        }
+    }
+}
+
+/// Job-specific training data
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JobTrainingData {
+    pub name: String,
+    pub namespace: String,
+    pub completions: i32,
+    pub parallelism: i32,
+    pub succeeded: i32,
+    pub failed: i32,
+    pub active: i32,
+    pub conditions: Vec<String>,
+}
+
+impl JobTrainingData {
+    pub fn from_job(job: Job) -> Self {
+        let metadata = job.metadata;
+        let spec = job.spec.unwrap_or_default();
+        let status = job.status.unwrap_or_default();
+        
+        let name = metadata.name.unwrap_or_default();
+        let namespace = metadata.namespace.unwrap_or_else(|| "default".to_string());
+        
+        let completions = spec.completions.unwrap_or(1);
+        let parallelism = spec.parallelism.unwrap_or(1);
+        
+        let succeeded = status.succeeded.unwrap_or(0);
+        let failed = status.failed.unwrap_or(0);
+        let active = status.active.unwrap_or(0);
+        
+        let conditions: Vec<String> = status
+            .conditions
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| c.status == "False")
+            .map(|c| format!("{}: {}", c.type_, c.message.unwrap_or_default()))
+            .collect();
+        
+        Self {
+            name,
+            namespace,
+            completions,
+            parallelism,
+            succeeded,
+            failed,
+            active,
+            conditions,
+        }
+    }
+}
+
+/// Service-specific training data
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServiceTrainingData {
+    pub name: String,
+    pub namespace: String,
+    pub service_type: String,
+    pub cluster_ip: String,
+    pub external_ips: Vec<String>,
+    pub ports: Vec<String>,
+    pub selector: Vec<String>,
+}
+
+impl ServiceTrainingData {
+    pub fn from_service(svc: Service) -> Self {
+        let metadata = svc.metadata;
+        let spec = svc.spec.unwrap_or_default();
+        
+        let name = metadata.name.unwrap_or_default();
+        let namespace = metadata.namespace.unwrap_or_else(|| "default".to_string());
+        
+        let service_type = spec.type_.unwrap_or_else(|| "ClusterIP".to_string());
+        let cluster_ip = spec.cluster_ip.unwrap_or_default();
+        let external_ips = spec.external_ips.unwrap_or_default();
+        
+        let ports: Vec<String> = spec
+            .ports
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| {
+                format!(
+                    "{}:{}/{}",
+                    p.name.unwrap_or_default(),
+                    p.port,
+                    p.protocol.unwrap_or_else(|| "TCP".to_string())
+                )
+            })
+            .collect();
+        
+        let selector: Vec<String> = spec
+            .selector
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        
+        Self {
+            name,
+            namespace,
+            service_type,
+            cluster_ip,
+            external_ips,
+            ports,
+            selector,
+        }
+    }
+}
+
+/// PVC-specific training data
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PvcTrainingData {
+    pub name: String,
+    pub namespace: String,
+    pub status: String,
+    pub storage_class: String,
+    pub capacity: String,
+    pub access_modes: Vec<String>,
+    pub volume_name: String,
+}
+
+impl PvcTrainingData {
+    pub fn from_pvc(pvc: PersistentVolumeClaim) -> Self {
+        let metadata = pvc.metadata;
+        let spec = pvc.spec.unwrap_or_default();
+        let status = pvc.status.unwrap_or_default();
+        
+        let name = metadata.name.unwrap_or_default();
+        let namespace = metadata.namespace.unwrap_or_else(|| "default".to_string());
+        
+        let pvc_status = status.phase.unwrap_or_else(|| "Unknown".to_string());
+        let storage_class = spec.storage_class_name.unwrap_or_else(|| "default".to_string());
+        
+        let capacity = status
+            .capacity
+            .and_then(|c| c.get("storage").map(|v| v.0.clone()))
+            .unwrap_or_else(|| "unknown".to_string());
+        
+        let access_modes = spec.access_modes.unwrap_or_default();
+        let volume_name = spec.volume_name.unwrap_or_default();
+        
+        Self {
+            name,
+            namespace,
+            status: pvc_status,
+            storage_class,
+            capacity,
+            access_modes,
+            volume_name,
+        }
+    }
+}
+
+impl TrainingExample {
+    pub fn from_pod(pod_data: PodTrainingData) -> Self {
+        let id = format!("statefulset-{}-{}", sts_data.namespace, sts_data.name);
+        
+        let input = format!(
+            "Analyze this Kubernetes StatefulSet:\n\
+            Name: {}\n\
+            Namespace: {}\n\
+            Desired Replicas: {}\n\
+            Ready Replicas: {}\n\
+            Current Replicas: {}\n\
+            Service: {}",
+            sts_data.name,
+            sts_data.namespace,
+            sts_data.replicas_desired,
+            sts_data.replicas_ready,
+            sts_data.replicas_current,
+            sts_data.service_name
+        );
+        
+        let output = if sts_data.replicas_ready == sts_data.replicas_desired {
+            "StatefulSet is healthy - all replicas are ready".to_string()
+        } else {
+            format!(
+                "StatefulSet has {}/{} replicas ready - investigate pod issues and check PVCs",
+                sts_data.replicas_ready, sts_data.replicas_desired
+            )
+        };
+        
+        Self {
+            id,
+            resource_type: "statefulset".to_string(),
+            input,
+            output,
+            metadata: TrainingMetadata {
+                namespace: Some(sts_data.namespace),
+                cluster: None,
+                severity: if sts_data.replicas_ready < sts_data.replicas_desired {
+                    Severity::Warning
+                } else {
+                    Severity::Normal
+                },
+                tags: vec!["kubernetes".to_string(), "statefulset".to_string()],
+            },
+            timestamp: Utc::now(),
+        }
+    }
+    
+    pub fn from_daemonset(ds_data: DaemonSetTrainingData) -> Self {
+        let id = format!("daemonset-{}-{}", ds_data.namespace, ds_data.name);
+        
+        let input = format!(
+            "Analyze this Kubernetes DaemonSet:\n\
+            Name: {}\n\
+            Namespace: {}\n\
+            Desired Scheduled: {}\n\
+            Current Scheduled: {}\n\
+            Ready: {}\n\
+            Available: {}\n\
+            Misscheduled: {}",
+            ds_data.name,
+            ds_data.namespace,
+            ds_data.desired_scheduled,
+            ds_data.current_scheduled,
+            ds_data.number_ready,
+            ds_data.number_available,
+            ds_data.number_misscheduled
+        );
+        
+        let mut issues = Vec::new();
+        
+        if ds_data.number_ready < ds_data.desired_scheduled {
+            issues.push(format!(
+                "Only {}/{} pods are ready",
+                ds_data.number_ready, ds_data.desired_scheduled
+            ));
+        }
+        
+        if ds_data.number_misscheduled > 0 {
+            issues.push(format!(
+                "{} pods are misscheduled - check node selectors and tolerations",
+                ds_data.number_misscheduled
+            ));
+        }
+        
+        let output = if issues.is_empty() {
+            "DaemonSet is healthy - all desired pods are running".to_string()
+        } else {
+            format!("DaemonSet issues:\n{}", issues.join("\n"))
+        };
+        
+        Self {
+            id,
+            resource_type: "daemonset".to_string(),
+            input,
+            output,
+            metadata: TrainingMetadata {
+                namespace: Some(ds_data.namespace),
+                cluster: None,
+                severity: if !issues.is_empty() {
+                    Severity::Warning
+                } else {
+                    Severity::Normal
+                },
+                tags: vec!["kubernetes".to_string(), "daemonset".to_string()],
+            },
+            timestamp: Utc::now(),
+        }
+    }
+    
+    pub fn from_job(job_data: JobTrainingData) -> Self {
+        let id = format!("job-{}-{}", job_data.namespace, job_data.name);
+        
+        let input = format!(
+            "Analyze this Kubernetes Job:\n\
+            Name: {}\n\
+            Namespace: {}\n\
+            Completions: {}\n\
+            Parallelism: {}\n\
+            Succeeded: {}\n\
+            Failed: {}\n\
+            Active: {}",
+            job_data.name,
+            job_data.namespace,
+            job_data.completions,
+            job_data.parallelism,
+            job_data.succeeded,
+            job_data.failed,
+            job_data.active
+        );
+        
+        let output = if job_data.succeeded >= job_data.completions {
+            "Job completed successfully".to_string()
+        } else if job_data.failed > 0 {
+            format!(
+                "Job has {} failed pods - check logs for errors. Succeeded: {}/{}",
+                job_data.failed, job_data.succeeded, job_data.completions
+            )
+        } else if job_data.active > 0 {
+            format!(
+                "Job is running - {}/{} completions, {} active pods",
+                job_data.succeeded, job_data.completions, job_data.active
+            )
+        } else {
+            "Job status unknown - investigate pod states".to_string()
+        };
+        
+        Self {
+            id,
+            resource_type: "job".to_string(),
+            input,
+            output,
+            metadata: TrainingMetadata {
+                namespace: Some(job_data.namespace),
+                cluster: None,
+                severity: if job_data.failed > 0 {
+                    Severity::Warning
+                } else if job_data.succeeded >= job_data.completions {
+                    Severity::Normal
+                } else {
+                    Severity::Info
+                },
+                tags: vec!["kubernetes".to_string(), "job".to_string()],
+            },
+            timestamp: Utc::now(),
+        }
+    }
+    
+    pub fn from_service(svc_data: ServiceTrainingData) -> Self {
+        let id = format!("service-{}-{}", svc_data.namespace, svc_data.name);
+        
+        let input = format!(
+            "Analyze this Kubernetes Service:\n\
+            Name: {}\n\
+            Namespace: {}\n\
+            Type: {}\n\
+            ClusterIP: {}\n\
+            Ports: {}\n\
+            Selector: {}",
+            svc_data.name,
+            svc_data.namespace,
+            svc_data.service_type,
+            svc_data.cluster_ip,
+            svc_data.ports.join(", "),
+            svc_data.selector.join(", ")
+        );
+        
+        let output = if svc_data.selector.is_empty() {
+            "Service has no selector - it won't route traffic to any pods".to_string()
+        } else {
+            format!(
+                "Service is configured to route traffic to pods matching: {}",
+                svc_data.selector.join(", ")
+            )
+        };
+        
+        Self {
+            id,
+            resource_type: "service".to_string(),
+            input,
+            output,
+            metadata: TrainingMetadata {
+                namespace: Some(svc_data.namespace),
+                cluster: None,
+                severity: if svc_data.selector.is_empty() {
+                    Severity::Warning
+                } else {
+                    Severity::Normal
+                },
+                tags: vec!["kubernetes".to_string(), "service".to_string()],
+            },
+            timestamp: Utc::now(),
+        }
+    }
+    
+    pub fn from_pvc(pvc_data: PvcTrainingData) -> Self {
+        let id = format!("pvc-{}-{}", pvc_data.namespace, pvc_data.name);
+        
+        let input = format!(
+            "Analyze this Kubernetes PersistentVolumeClaim:\n\
+            Name: {}\n\
+            Namespace: {}\n\
+            Status: {}\n\
+            Storage Class: {}\n\
+            Capacity: {}\n\
+            Access Modes: {}",
+            pvc_data.name,
+            pvc_data.namespace,
+            pvc_data.status,
+            pvc_data.storage_class,
+            pvc_data.capacity,
+            pvc_data.access_modes.join(", ")
+        );
+        
+        let output = match pvc_data.status.as_str() {
+            "Bound" => "PVC is bound to a volume and ready to use".to_string(),
+            "Pending" => "PVC is pending - check storage class and available PVs".to_string(),
+            "Lost" => "PVC has lost its underlying volume - data may be lost".to_string(),
+            _ => format!("PVC status: {} - investigate storage configuration", pvc_data.status),
+        };
+        
+        Self {
+            id,
+            resource_type: "pvc".to_string(),
+            input,
+            output,
+            metadata: TrainingMetadata {
+                namespace: Some(pvc_data.namespace),
+                cluster: None,
+                severity: match pvc_data.status.as_str() {
+                    "Bound" => Severity::Normal,
+                    "Lost" => Severity::Critical,
+                    _ => Severity::Warning,
+                },
+                tags: vec!["kubernetes".to_string(), "pvc".to_string(), "storage".to_string()],
             },
             timestamp: Utc::now(),
         }
