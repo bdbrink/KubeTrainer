@@ -69,7 +69,7 @@ fn export_csv(data: &[TrainingExample], output_path: &Path) -> Result<()> {
             &example.input,
             &example.output,
             &format!("{:?}", example.metadata.severity),
-            &example.metadata.namespace.as_deref().unwrap_or(""),
+            example.metadata.namespace.as_deref().unwrap_or(""),
             &example.timestamp.to_rfc3339(),
         ])?;
     }

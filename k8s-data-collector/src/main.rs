@@ -11,7 +11,7 @@ use k8s_openapi::api::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tracing::{info, warn};
+use tracing::info;
 
 mod collectors;
 mod exporters;
