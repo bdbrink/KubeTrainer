@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
     info!("📁 Output directory: {:?}", cli.output_dir);
 
     // Initialize Kubernetes client
-    let client = if let Some(kubeconfig_path) = cli.kubeconfig {
+    let client = if let Some(ref kubeconfig_path) = cli.kubeconfig {
         let config = kube::Config::from_kubeconfig(&kube::config::KubeConfigOptions {
             context: None,
             cluster: None,

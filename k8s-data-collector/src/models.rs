@@ -729,22 +729,26 @@ impl TrainingExample {
             event_data.message
         );
         
+        let is_problem = event_data.is_problem();
+        let timestamp = event_data.timestamp;
+        let namespace = event_data.namespace;
+        
         Self {
             id,
             resource_type: "event".to_string(),
             input,
             output,
             metadata: TrainingMetadata {
-                namespace: Some(event_data.namespace),
+                namespace: Some(namespace),
                 cluster: None,
-                severity: if event_data.is_problem() {
+                severity: if is_problem {
                     Severity::Warning
                 } else {
                     Severity::Info
                 },
                 tags: vec!["kubernetes".to_string(), "event".to_string()],
             },
-            timestamp: event_data.timestamp,
+            timestamp,
         }
     }
     
