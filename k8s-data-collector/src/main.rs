@@ -9,7 +9,6 @@ use k8s_openapi::api::{
     core::v1::{Pod, Event, Node, PersistentVolumeClaim, Service},
     batch::v1::Job,
 };
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::info;
 
