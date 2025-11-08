@@ -548,10 +548,18 @@ pub struct EventTrainingData {
 impl EventTrainingData {
     pub fn from_event(event: Event, cutoff: DateTime<Utc>) -> Option<Self> {
         let metadata = event.metadata;
-        let timestamp = event.last_timestamp
-            .or(event.event_time)
-            .and_then(|t| DateTime::parse_from_rfc3339(&t.0).ok())
-            .map(|t| t.with_timezone(&Utc))?;
+        
+        // Try to get timestamp - prefer last_timestamp, fall back to event_time
+        // Both Time and MicroTime contain DateTime<Utc> in their .0 field
+        let timestamp = if let Some(last_ts) = event.last_timestamp {
+            // last_ts.0 is already DateTime<Utc>
+            last_ts.0
+        } else if let Some(event_time) = event.event_time {
+            // event_time.0 is already DateTime<Utc>
+            event_time.0
+        } else {
+            return None;
+        };
         
         if timestamp < cutoff {
             return None;
