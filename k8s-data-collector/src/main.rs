@@ -9,6 +9,7 @@ use k8s_openapi::api::{
     core::v1::{Pod, Event, Node, PersistentVolumeClaim, Service},
     batch::v1::Job,
 };
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::info;
 
@@ -125,54 +126,76 @@ async fn main() -> Result<()> {
     info!("🚀 K8s Data Collector starting...");
     info!("📁 Output directory: {:?}", cli.output_dir);
 
-    // Initialize Kubernetes client
-    let client = if let Some(ref kubeconfig_path) = cli.kubeconfig {
-        let config = kube::Config::from_kubeconfig(&kube::config::KubeConfigOptions {
-            context: None,
-            cluster: None,
-            user: None,
-        })
-        .await?;
-        Client::try_from(config)?
+    // Check if we need a K8s client (synthetic mode doesn't need one)
+    let needs_k8s_client = !matches!(cli.command, Commands::Synthetic { .. });
+
+    // Initialize Kubernetes client only if needed
+    let client = if needs_k8s_client {
+        if let Some(ref _kubeconfig_path) = cli.kubeconfig {
+            let config = kube::Config::from_kubeconfig(&kube::config::KubeConfigOptions {
+                context: None,
+                cluster: None,
+                user: None,
+            })
+            .await?;
+            Some(Client::try_from(config)?)
+        } else {
+            Some(Client::try_default().await?)
+        }
     } else {
-        Client::try_default().await?
+        None
     };
 
-    info!("✅ Connected to Kubernetes cluster");
+    if let Some(ref client) = client {
+        info!("✅ Connected to Kubernetes cluster");
+    } else {
+        info!("ℹ️  Running in offline mode (no K8s connection needed)");
+    }
 
     // Execute command
     match cli.command {
         Commands::All { include_events } => {
-            collect_all_data(&client, &cli, include_events).await?;
+            let client = client.as_ref().expect("K8s client required for 'all' command");
+            collect_all_data(client, &cli, include_events).await?;
         }
         Commands::Pods { problems_only } => {
-            collect_pods(&client, &cli, problems_only).await?;
+            let client = client.as_ref().expect("K8s client required for 'pods' command");
+            collect_pods(client, &cli, problems_only).await?;
         }
         Commands::Deployments => {
-            collect_deployments(&client, &cli).await?;
+            let client = client.as_ref().expect("K8s client required for 'deployments' command");
+            collect_deployments(client, &cli).await?;
         }
         Commands::Events { problems_only, hours } => {
-            collect_events(&client, &cli, problems_only, hours).await?;
+            let client = client.as_ref().expect("K8s client required for 'events' command");
+            collect_events(client, &cli, problems_only, hours).await?;
         }
         Commands::Nodes => {
-            collect_nodes(&client, &cli).await?;
+            let client = client.as_ref().expect("K8s client required for 'nodes' command");
+            collect_nodes(client, &cli).await?;
         }
         Commands::StatefulSets => {
-            collect_statefulsets(&client, &cli).await?;
+            let client = client.as_ref().expect("K8s client required for 'statefulsets' command");
+            collect_statefulsets(client, &cli).await?;
         }
         Commands::DaemonSets => {
-            collect_daemonsets(&client, &cli).await?;
+            let client = client.as_ref().expect("K8s client required for 'daemonsets' command");
+            collect_daemonsets(client, &cli).await?;
         }
         Commands::Jobs => {
-            collect_jobs(&client, &cli).await?;
+            let client = client.as_ref().expect("K8s client required for 'jobs' command");
+            collect_jobs(client, &cli).await?;
         }
         Commands::Services => {
-            collect_services(&client, &cli).await?;
+            let client = client.as_ref().expect("K8s client required for 'services' command");
+            collect_services(client, &cli).await?;
         }
         Commands::Pvcs => {
-            collect_pvcs(&client, &cli).await?;
+            let client = client.as_ref().expect("K8s client required for 'pvcs' command");
+            collect_pvcs(client, &cli).await?;
         }
         Commands::Synthetic { count } => {
+            // Synthetic mode doesn't need K8s client
             generate_synthetic_data(&cli, count).await?;
         }
     }
