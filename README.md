@@ -73,9 +73,9 @@ kubetrainer/
 │   ├── rag_pipeline.py
 │   ├── train_utils.py
 │   └── model_loader.py
-├── cluster_agent/        # Rust binary for telemetry + data harvesting
-├── helm/                 # Helm chart for deploying KubeTrainer to K8s
-├── scripts/              # Setup and helper scripts
+├── k8s-data-collector/   # Rust binary for telemetry + data harvesting
+├── gpu-detect/           # Rust code for detecting GPU
+├── bash_scripts/         # Setup and helper scripts
 └── README.md
 ```
 
@@ -138,10 +138,3 @@ kubetrainer/
 Apache 2.0 — free for research and commercial use.
 
 ---
-
-## ❤️ Acknowledgments
-
-Built by **Brendan Brink**  
-→ For engineers building intelligent, adaptive clusters.  
-
-> “Train smarter. Scale faster. All within Kubernetes.”
