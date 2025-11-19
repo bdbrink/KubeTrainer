@@ -449,7 +449,7 @@ async fn collect_services(client: &Client, cli: &Cli) -> Result<()> {
 }
 
 async fn collect_pvcs(client: &Client, cli: &Cli) -> Result<()> {
-    info!("🔍 Collecting PVC data...");
+    info!("🔍 Collecting PVCs data...");
     
     let pvcs: Api<PersistentVolumeClaim> = if let Some(ns) = &cli.namespace {
         Api::namespaced(client.clone(), ns)
@@ -471,6 +471,33 @@ async fn collect_pvcs(client: &Client, cli: &Cli) -> Result<()> {
     export_training_data(&training_data, &output_path, &cli.format)?;
     
     info!("✅ Collected {} PVC examples", training_data.len());
+    
+    Ok(())
+}
+
+async fn collect_pvs(client: &Client, cli: &Cli) -> Result<()> {
+    info!("🔍 Collecting PVs data...");
+    
+    let pv: Api<PersistentVolume> = if let Some(ns) = &cli.namespace {
+        Api::namespaced(client.clone(), ns)
+    } else {
+        Api::all(client.clone())
+    };
+
+    let lp = ListParams::default();
+    let pv_list = pv.list(&lp).await?;
+    
+    let mut training_data = Vec::new();
+    
+    for pv in pv_list {
+        let pv_data = PvTrainingData::from_pv(pv);
+        training_data.push(TrainingExample::from_pv(pv_data));
+    }
+    
+    let output_path = cli.output_dir.join("pvs_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Collected {} PV examples", training_data.len());
     
     Ok(())
 }
