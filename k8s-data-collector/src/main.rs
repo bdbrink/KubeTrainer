@@ -6,8 +6,9 @@ use kube::{
 };
 use k8s_openapi::api::{
     apps::v1::{Deployment, StatefulSet, DaemonSet},
-    core::v1::{Pod, Event, Node, PersistentVolumeClaim, Service},
+    core::v1::{Pod, Event, Node, PersistentVolumeClaim, PersistentVolume, Service},
     batch::v1::Job,
+    storage::v1::StorageClass,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -91,6 +92,12 @@ enum Commands {
     
     /// Collect PersistentVolumeClaims
     Pvcs,
+    
+    /// Collect PersistentVolumes
+    Pvs,
+    
+    /// Collect StorageClasses
+    StorageClasses,
     
     /// Generate synthetic SRE scenarios
     Synthetic {
@@ -194,6 +201,14 @@ async fn main() -> Result<()> {
             let client = client.as_ref().expect("K8s client required for 'pvcs' command");
             collect_pvcs(client, &cli).await?;
         }
+        Commands::Pvs => {
+            let client = client.as_ref().expect("K8s client required for 'pvs' command");
+            collect_pvs(client, &cli).await?;
+        }
+        Commands::StorageClasses => {
+            let client = client.as_ref().expect("K8s client required for 'storageclasses' command");
+            collect_storageclasses(client, &cli).await?;
+        }
         Commands::Synthetic { count } => {
             // Synthetic mode doesn't need K8s client
             generate_synthetic_data(&cli, count).await?;
@@ -215,6 +230,8 @@ async fn collect_all_data(client: &Client, cli: &Cli, include_events: bool) -> R
     collect_jobs(client, cli).await?;
     collect_services(client, cli).await?;
     collect_pvcs(client, cli).await?;
+    collect_pvs(client, cli).await?;
+    collect_storageclasses(client, cli).await?;
     collect_nodes(client, cli).await?;
     
     if include_events {
@@ -478,14 +495,11 @@ async fn collect_pvcs(client: &Client, cli: &Cli) -> Result<()> {
 async fn collect_pvs(client: &Client, cli: &Cli) -> Result<()> {
     info!("🔍 Collecting PVs data...");
     
-    let pv: Api<PersistentVolume> = if let Some(ns) = &cli.namespace {
-        Api::namespaced(client.clone(), ns)
-    } else {
-        Api::all(client.clone())
-    };
+    // PVs are cluster-scoped, so we always use Api::all()
+    let pvs: Api<PersistentVolume> = Api::all(client.clone());
 
     let lp = ListParams::default();
-    let pv_list = pv.list(&lp).await?;
+    let pv_list = pvs.list(&lp).await?;
     
     let mut training_data = Vec::new();
     
@@ -498,6 +512,30 @@ async fn collect_pvs(client: &Client, cli: &Cli) -> Result<()> {
     export_training_data(&training_data, &output_path, &cli.format)?;
     
     info!("✅ Collected {} PV examples", training_data.len());
+    
+    Ok(())
+}
+
+async fn collect_storageclasses(client: &Client, cli: &Cli) -> Result<()> {
+    info!("🔍 Collecting StorageClass data...");
+    
+    // StorageClasses are cluster-scoped, so we always use Api::all()
+    let storageclasses: Api<StorageClass> = Api::all(client.clone());
+
+    let lp = ListParams::default();
+    let sc_list = storageclasses.list(&lp).await?;
+    
+    let mut training_data = Vec::new();
+    
+    for sc in sc_list {
+        let sc_data = StorageClassTrainingData::from_storageclass(sc);
+        training_data.push(TrainingExample::from_storageclass(sc_data));
+    }
+    
+    let output_path = cli.output_dir.join("storageclasses_training_data");
+    export_training_data(&training_data, &output_path, &cli.format)?;
+    
+    info!("✅ Collected {} StorageClass examples", training_data.len());
     
     Ok(())
 }
