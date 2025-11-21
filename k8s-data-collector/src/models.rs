@@ -75,6 +75,44 @@ pub struct ResourceInfo {
     pub memory: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistentVolumeTrainingData {
+    pub name: String,
+    pub status: String,
+    pub storage_class: String,
+    pub capacity: String,
+    pub access_modes: Vec<String>,
+    pub reclaim_policy: String,
+}
+
+impl PersistentVolumeTrainingData {
+    pub fn from_pv(pv: PersistentVolume) -> Self {
+        let metadata = pv.metadata;
+        let spec = pv.spec.unwrap_or_default();
+        let status = pv.status.unwrap_or_default();
+        
+        let name = metadata.name.unwrap_or_default();
+        let storage_class = spec.storage_class_name.unwrap_or_else(|| "default".to_string());
+        let capacity = spec.capacity
+            .and_then(|c| c.get("storage").cloned())
+            .map(|q| q.0)
+            .unwrap_or_else(|| "unknown".to_string());
+        let access_modes = spec.access_modes.unwrap_or_default();
+        let reclaim_policy = spec.persistent_volume_reclaim_policy
+            .unwrap_or_else(|| "Retain".to_string());
+        let pv_status = status.phase.unwrap_or_else(|| "Unknown".to_string());
+        
+        Self {
+            name,
+            status: pv_status,
+            storage_class,
+            capacity,
+            access_modes,
+            reclaim_policy,
+        }
+    }
+}
+
 impl PodTrainingData {
     pub fn from_pod(pod: Pod) -> Self {
         let metadata = pod.metadata;
@@ -638,9 +676,13 @@ impl EventTrainingData {
     pub fn from_event(event: Event, cutoff: DateTime<Utc>) -> Option<Self> {
         let metadata = event.metadata;
         
+        // Try to get timestamp - prefer last_timestamp, fall back to event_time
+        // Both Time and MicroTime contain DateTime<Utc> in their .0 field
         let timestamp = if let Some(last_ts) = event.last_timestamp {
+            // last_ts.0 is already DateTime<Utc>
             last_ts.0
         } else if let Some(event_time) = event.event_time {
+            // event_time.0 is already DateTime<Utc>
             event_time.0
         } else {
             return None;
@@ -730,6 +772,179 @@ impl TrainingExample {
             Severity::Critical
         } else {
             Severity::Warning
+        };
+        
+        Self {
+            id,
+            resource_type: "pod".to_string(),
+            input: pod_data.generate_input(),
+            output: pod_data.generate_output(),
+            metadata: TrainingMetadata {
+                namespace: Some(pod_data.namespace.clone()),
+                cluster: None,
+                severity,
+                tags: vec!["kubernetes".to_string(), "pod".to_string()],
+            },
+            timestamp: Utc::now(),
+        }
+    }
+    
+    pub fn from_deployment(dep_data: DeploymentTrainingData) -> Self {
+        let id = format!("deployment-{}-{}", dep_data.namespace, dep_data.name);
+        
+        let input = format!(
+            "Analyze this Kubernetes deployment:\n\
+            Name: {}\n\
+            Namespace: {}\n\
+            Desired Replicas: {}\n\
+            Ready Replicas: {}\n\
+            Available Replicas: {}",
+            dep_data.name,
+            dep_data.namespace,
+            dep_data.replicas_desired,
+            dep_data.replicas_ready,
+            dep_data.replicas_available
+        );
+        
+        let output = if dep_data.replicas_ready == dep_data.replicas_desired {
+            "Deployment is healthy - all replicas are ready".to_string()
+        } else {
+            format!(
+                "Deployment has {}/{} replicas ready - investigate pod issues",
+                dep_data.replicas_ready, dep_data.replicas_desired
+            )
+        };
+        
+        Self {
+            id,
+            resource_type: "deployment".to_string(),
+            input,
+            output,
+            metadata: TrainingMetadata {
+                namespace: Some(dep_data.namespace),
+                cluster: None,
+                severity: if dep_data.replicas_ready < dep_data.replicas_desired {
+                    Severity::Warning
+                } else {
+                    Severity::Normal
+                },
+                tags: vec!["kubernetes".to_string(), "deployment".to_string()],
+            },
+            timestamp: Utc::now(),
+        }
+    }
+    
+    pub fn from_event(event_data: EventTrainingData) -> Self {
+        let id = format!("event-{}-{}", event_data.namespace, event_data.timestamp.timestamp());
+        
+        let input = format!(
+            "Kubernetes event:\n\
+            Type: {}\n\
+            Reason: {}\n\
+            Object: {}\n\
+            Message: {}",
+            event_data.type_,
+            event_data.reason,
+            event_data.involved_object,
+            event_data.message
+        );
+        
+        let output = format!(
+            "Event analysis: {} event for {} - {}",
+            event_data.type_,
+            event_data.involved_object,
+            event_data.message
+        );
+        
+        let is_problem = event_data.is_problem();
+        let timestamp = event_data.timestamp;
+        let namespace = event_data.namespace;
+        
+        Self {
+            id,
+            resource_type: "event".to_string(),
+            input,
+            output,
+            metadata: TrainingMetadata {
+                namespace: Some(namespace),
+                cluster: None,
+                severity: if is_problem {
+                    Severity::Warning
+                } else {
+                    Severity::Info
+                },
+                tags: vec!["kubernetes".to_string(), "event".to_string()],
+            },
+            timestamp,
+        }
+    }
+    
+    pub fn from_node(node_data: NodeTrainingData) -> Self {
+        let id = format!("node-{}", node_data.name);
+        
+        let input = format!(
+            "Analyze this Kubernetes node:\n\
+            Name: {}\n\
+            CPU Capacity: {}\n\
+            Memory Capacity: {}\n\
+            Kubelet Version: {}",
+            node_data.name,
+            node_data.capacity.cpu.as_deref().unwrap_or("unknown"),
+            node_data.capacity.memory.as_deref().unwrap_or("unknown"),
+            node_data.kubelet_version
+        );
+        
+        let output = if node_data.conditions.is_empty() {
+            "Node is healthy - all conditions normal".to_string()
+        } else {
+            format!("Node issues detected:\n{}", node_data.conditions.join("\n"))
+        };
+        
+        Self {
+            id,
+            resource_type: "node".to_string(),
+            input,
+            output,
+            metadata: TrainingMetadata {
+                namespace: None,
+                cluster: None,
+                severity: if node_data.conditions.is_empty() {
+                    Severity::Normal
+                } else {
+                    Severity::Warning
+                },
+                tags: vec!["kubernetes".to_string(), "node".to_string()],
+            },
+            timestamp: Utc::now(),
+        }
+    }
+    
+    pub fn from_statefulset(sts_data: StatefulSetTrainingData) -> Self {
+        let id = format!("statefulset-{}-{}", sts_data.namespace, sts_data.name);
+        
+        let input = format!(
+            "Analyze this Kubernetes StatefulSet:\n\
+            Name: {}\n\
+            Namespace: {}\n\
+            Desired Replicas: {}\n\
+            Ready Replicas: {}\n\
+            Current Replicas: {}\n\
+            Service: {}",
+            sts_data.name,
+            sts_data.namespace,
+            sts_data.replicas_desired,
+            sts_data.replicas_ready,
+            sts_data.replicas_current,
+            sts_data.service_name
+        );
+        
+        let output = if sts_data.replicas_ready == sts_data.replicas_desired {
+            "StatefulSet is healthy - all replicas are ready".to_string()
+        } else {
+            format!(
+                "StatefulSet has {}/{} replicas ready - investigate pod issues and check PVCs",
+                sts_data.replicas_ready, sts_data.replicas_desired
+            )
         };
         
         Self {
@@ -917,6 +1132,96 @@ impl TrainingExample {
             timestamp: Utc::now(),
         }
     }
+
+    pub fn from_storageclass(sc_data: StorageClassTrainingData) -> Self {
+    let id = format!("storageclass-{}", sc_data.name);
+    
+    let input = format!(
+        "Analyze this Kubernetes StorageClass:\n\
+        Name: {}\n\
+        Provisioner: {}\n\
+        Reclaim Policy: {}\n\
+        Volume Binding Mode: {}\n\
+        Allow Volume Expansion: {}\n\
+        Parameters: {}",
+        sc_data.name,
+        sc_data.provisioner,
+        sc_data.reclaim_policy,
+        sc_data.volume_binding_mode,
+        sc_data.allow_volume_expansion,
+        sc_data.parameters.join(", ")
+    );
+    
+    let output = format!(
+        "StorageClass '{}' uses {} provisioner with {} reclaim policy. \
+        Volume expansion is {}. Binding mode: {}",
+        sc_data.name,
+        sc_data.provisioner,
+        sc_data.reclaim_policy,
+        if sc_data.allow_volume_expansion { "enabled" } else { "disabled" },
+        sc_data.volume_binding_mode
+    );
+    
+    Self {
+        id,
+        resource_type: "storageclass".to_string(),
+        input,
+        output,
+        metadata: TrainingMetadata {
+            namespace: None, // StorageClass is cluster-scoped
+            cluster: None,
+            severity: Severity::Normal,
+            tags: vec!["kubernetes".to_string(), "storageclass".to_string(), "storage".to_string()],
+        },
+        timestamp: Utc::now(),
+    }
+}
+
+pub fn from_pv(pv_data: PersistentVolumeTrainingData) -> Self {
+    let id = format!("pv-{}", pv_data.name);
+    
+    let input = format!(
+        "Analyze this Kubernetes PersistentVolume:\n\
+        Name: {}\n\
+        Status: {}\n\
+        Storage Class: {}\n\
+        Capacity: {}\n\
+        Access Modes: {}\n\
+        Reclaim Policy: {}",
+        pv_data.name,
+        pv_data.status,
+        pv_data.storage_class,
+        pv_data.capacity,
+        pv_data.access_modes.join(", "),
+        pv_data.reclaim_policy
+    );
+    
+    let output = match pv_data.status.as_str() {
+        "Available" => "PV is available and ready to be bound to a PVC".to_string(),
+        "Bound" => "PV is bound to a PVC and in use".to_string(),
+        "Released" => "PV was bound but the PVC was deleted - check reclaim policy".to_string(),
+        "Failed" => "PV has failed and needs attention".to_string(),
+        _ => format!("PV status: {} - review volume configuration", pv_data.status),
+    };
+    
+    Self {
+        id,
+        resource_type: "pv".to_string(),
+        input,
+        output,
+        metadata: TrainingMetadata {
+            namespace: None, // PV is cluster-scoped
+            cluster: None,
+            severity: match pv_data.status.as_str() {
+                "Available" | "Bound" => Severity::Normal,
+                "Failed" => Severity::Critical,
+                _ => Severity::Warning,
+            },
+            tags: vec!["kubernetes".to_string(), "pv".to_string(), "storage".to_string()],
+        },
+        timestamp: Utc::now(),
+    }
+}
     
     pub fn from_pvc(pvc_data: PvcTrainingData) -> Self {
         let id = format!("pvc-{}-{}", pvc_data.namespace, pvc_data.name);
@@ -962,292 +1267,4 @@ impl TrainingExample {
             timestamp: Utc::now(),
         }
     }
-    
-    pub fn from_pv(pv_data: PvTrainingData) -> Self {
-        let id = format!("pv-{}", pv_data.name);
-        
-        let input = format!(
-            "Analyze this Kubernetes PersistentVolume:\n\
-            Name: {}\n\
-            Status: {}\n\
-            Storage Class: {}\n\
-            Capacity: {}\n\
-            Access Modes: {}\n\
-            Reclaim Policy: {}\n\
-            Volume Mode: {}\n\
-            Claim: {}",
-            pv_data.name,
-            pv_data.status,
-            pv_data.storage_class,
-            pv_data.capacity,
-            pv_data.access_modes.join(", "),
-            pv_data.reclaim_policy,
-            pv_data.volume_mode,
-            pv_data.claim_ref.as_deref().unwrap_or("None")
-        );
-        
-        let output = match pv_data.status.as_str() {
-            "Available" => "PV is available and ready to be claimed".to_string(),
-            "Bound" => format!(
-                "PV is bound to claim: {}",
-                pv_data.claim_ref.as_deref().unwrap_or("unknown")
-            ),
-            "Released" => "PV was released from claim but not yet reclaimed - check reclaim policy".to_string(),
-            "Failed" => "PV has failed - investigate underlying storage issues".to_string(),
-            _ => format!("PV status: {} - investigate storage configuration", pv_data.status),
-        };
-        
-        Self {
-            id,
-            resource_type: "pv".to_string(),
-            input,
-            output,
-            metadata: TrainingMetadata {
-                namespace: None,
-                cluster: None,
-                severity: match pv_data.status.as_str() {
-                    "Available" | "Bound" => Severity::Normal,
-                    "Failed" => Severity::Critical,
-                    _ => Severity::Warning,
-                },
-                tags: vec!["kubernetes".to_string(), "pv".to_string(), "storage".to_string()],
-            },
-            timestamp: Utc::now(),
-        }
-    }
-    
-    pub fn from_storageclass(sc_data: StorageClassTrainingData) -> Self {
-        let id = format!("storageclass-{}", sc_data.name);
-        
-        let input = format!(
-            "Analyze this Kubernetes StorageClass:\n\
-            Name: {}\n\
-            Provisioner: {}\n\
-            Reclaim Policy: {}\n\
-            Volume Binding Mode: {}\n\
-            Allow Volume Expansion: {}\n\
-            Parameters: {}",
-            sc_data.name,
-            sc_data.provisioner,
-            sc_data.reclaim_policy,
-            sc_data.volume_binding_mode,
-            sc_data.allow_volume_expansion,
-            if sc_data.parameters.is_empty() {
-                "None".to_string()
-            } else {
-                sc_data.parameters.join(", ")
-            }
-        );
-        
-        let mut analysis = Vec::new();
-        
-        analysis.push(format!(
-            "StorageClass uses {} provisioner for dynamic volume provisioning",
-            sc_data.provisioner
-        ));
-        
-        if sc_data.reclaim_policy == "Delete" {
-            analysis.push("Volumes will be automatically deleted when PVC is deleted".to_string());
-        } else {
-            analysis.push("Volumes will be retained after PVC deletion - manual cleanup required".to_string());
-        }
-        
-        if sc_data.volume_binding_mode == "WaitForFirstConsumer" {
-            analysis.push("Volume binding delayed until pod is scheduled - better for topology-aware provisioning".to_string());
-        } else {
-            analysis.push("Volume binding happens immediately when PVC is created".to_string());
-        }
-        
-        if sc_data.allow_volume_expansion {
-            analysis.push("Volume expansion is enabled - PVCs can be resized".to_string());
-        } else {
-            analysis.push("Volume expansion is disabled - PVCs cannot be resized".to_string());
-        }
-        
-        let output = format!("StorageClass analysis:\n{}", analysis.join("\n"));
-        
-        Self {
-            id,
-            resource_type: "storageclass".to_string(),
-            input,
-            output,
-            metadata: TrainingMetadata {
-                namespace: None,
-                cluster: None,
-                severity: Severity::Info,
-                tags: vec!["kubernetes".to_string(), "storageclass".to_string(), "storage".to_string()],
-            },
-            timestamp: Utc::now(),
-        }
-    }d,
-            resource_type: "pod".to_string(),
-            input: pod_data.generate_input(),
-            output: pod_data.generate_output(),
-            metadata: TrainingMetadata {
-                namespace: Some(pod_data.namespace.clone()),
-                cluster: None,
-                severity,
-                tags: vec!["kubernetes".to_string(), "pod".to_string()],
-            },
-            timestamp: Utc::now(),
-        }
-    }
-    
-    pub fn from_deployment(dep_data: DeploymentTrainingData) -> Self {
-        let id = format!("deployment-{}-{}", dep_data.namespace, dep_data.name);
-        
-        let input = format!(
-            "Analyze this Kubernetes deployment:\n\
-            Name: {}\n\
-            Namespace: {}\n\
-            Desired Replicas: {}\n\
-            Ready Replicas: {}\n\
-            Available Replicas: {}",
-            dep_data.name,
-            dep_data.namespace,
-            dep_data.replicas_desired,
-            dep_data.replicas_ready,
-            dep_data.replicas_available
-        );
-        
-        let output = if dep_data.replicas_ready == dep_data.replicas_desired {
-            "Deployment is healthy - all replicas are ready".to_string()
-        } else {
-            format!(
-                "Deployment has {}/{} replicas ready - investigate pod issues",
-                dep_data.replicas_ready, dep_data.replicas_desired
-            )
-        };
-        
-        Self {
-            id,
-            resource_type: "deployment".to_string(),
-            input,
-            output,
-            metadata: TrainingMetadata {
-                namespace: Some(dep_data.namespace),
-                cluster: None,
-                severity: if dep_data.replicas_ready < dep_data.replicas_desired {
-                    Severity::Warning
-                } else {
-                    Severity::Normal
-                },
-                tags: vec!["kubernetes".to_string(), "deployment".to_string()],
-            },
-            timestamp: Utc::now(),
-        }
-    }
-    
-    pub fn from_event(event_data: EventTrainingData) -> Self {
-        let id = format!("event-{}-{}", event_data.namespace, event_data.timestamp.timestamp());
-        
-        let input = format!(
-            "Kubernetes event:\n\
-            Type: {}\n\
-            Reason: {}\n\
-            Object: {}\n\
-            Message: {}",
-            event_data.type_,
-            event_data.reason,
-            event_data.involved_object,
-            event_data.message
-        );
-        
-        let output = format!(
-            "Event analysis: {} event for {} - {}",
-            event_data.type_,
-            event_data.involved_object,
-            event_data.message
-        );
-        
-        let is_problem = event_data.is_problem();
-        let timestamp = event_data.timestamp;
-        let namespace = event_data.namespace;
-        
-        Self {
-            id,
-            resource_type: "event".to_string(),
-            input,
-            output,
-            metadata: TrainingMetadata {
-                namespace: Some(namespace),
-                cluster: None,
-                severity: if is_problem {
-                    Severity::Warning
-                } else {
-                    Severity::Info
-                },
-                tags: vec!["kubernetes".to_string(), "event".to_string()],
-            },
-            timestamp,
-        }
-    }
-    
-    pub fn from_node(node_data: NodeTrainingData) -> Self {
-        let id = format!("node-{}", node_data.name);
-        
-        let input = format!(
-            "Analyze this Kubernetes node:\n\
-            Name: {}\n\
-            CPU Capacity: {}\n\
-            Memory Capacity: {}\n\
-            Kubelet Version: {}",
-            node_data.name,
-            node_data.capacity.cpu.as_deref().unwrap_or("unknown"),
-            node_data.capacity.memory.as_deref().unwrap_or("unknown"),
-            node_data.kubelet_version
-        );
-        
-        let output = if node_data.conditions.is_empty() {
-            "Node is healthy - all conditions normal".to_string()
-        } else {
-            format!("Node issues detected:\n{}", node_data.conditions.join("\n"))
-        };
-        
-        Self {
-            id,
-            resource_type: "node".to_string(),
-            input,
-            output,
-            metadata: TrainingMetadata {
-                namespace: None,
-                cluster: None,
-                severity: if node_data.conditions.is_empty() {
-                    Severity::Normal
-                } else {
-                    Severity::Warning
-                },
-                tags: vec!["kubernetes".to_string(), "node".to_string()],
-            },
-            timestamp: Utc::now(),
-        }
-    }
-    
-    pub fn from_statefulset(sts_data: StatefulSetTrainingData) -> Self {
-        let id = format!("statefulset-{}-{}", sts_data.namespace, sts_data.name);
-        
-        let input = format!(
-            "Analyze this Kubernetes StatefulSet:\n\
-            Name: {}\n\
-            Namespace: {}\n\
-            Desired Replicas: {}\n\
-            Ready Replicas: {}\n\
-            Current Replicas: {}\n\
-            Service: {}",
-            sts_data.name,
-            sts_data.namespace,
-            sts_data.replicas_desired,
-            sts_data.replicas_ready,
-            sts_data.replicas_current,
-            sts_data.service_name
-        );
-        
-        let output = if sts_data.replicas_ready == sts_data.replicas_desired {
-            "StatefulSet is healthy - all replicas are ready".to_string()
-        } else {
-            format!(
-                "StatefulSet has {}/{} replicas ready - investigate pod issues and check PVCs",
-                sts_data.replicas_ready, sts_data.replicas_desired
-            )
-        };
 }
