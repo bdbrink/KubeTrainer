@@ -10,8 +10,6 @@ use k8s_openapi::api::{
     batch::v1::Job,
     storage::v1::StorageClass,
 };
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::info;
 
@@ -154,7 +152,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    if let Some(ref client) = client {
+    if let Some(ref _client) = client {
         info!("✅ Connected to Kubernetes cluster");
     } else {
         info!("ℹ️  Running in offline mode (no K8s connection needed)");
