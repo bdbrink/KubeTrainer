@@ -505,7 +505,7 @@ async fn collect_pvs(client: &Client, cli: &Cli) -> Result<()> {
     let mut training_data = Vec::new();
     
     for pv in pv_list {
-        let pv_data = PvTrainingData::from_pv(pv);
+        let pv_data = PersistentVolumeTrainingData::from_pv(pv);
         training_data.push(TrainingExample::from_pv(pv_data));
     }
     
