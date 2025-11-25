@@ -586,42 +586,6 @@ pub struct PvTrainingData {
     pub volume_mode: String,
 }
 
-impl PvTrainingData {
-    pub fn from_pv(pv: PersistentVolume) -> Self {
-        let metadata = pv.metadata;
-        let spec = pv.spec.unwrap_or_default();
-        let status = pv.status.unwrap_or_default();
-        
-        let name = metadata.name.unwrap_or_default();
-        let pv_status = status.phase.unwrap_or_else(|| "Unknown".to_string());
-        let storage_class = spec.storage_class_name.unwrap_or_else(|| "default".to_string());
-        
-        let capacity = spec
-            .capacity
-            .and_then(|c| c.get("storage").map(|v| v.0.clone()))
-            .unwrap_or_else(|| "unknown".to_string());
-        
-        let access_modes = spec.access_modes.unwrap_or_default();
-        let reclaim_policy = spec.persistent_volume_reclaim_policy.unwrap_or_else(|| "Retain".to_string());
-        let volume_mode = spec.volume_mode.unwrap_or_else(|| "Filesystem".to_string());
-        
-        let claim_ref = spec.claim_ref.and_then(|cr| {
-            cr.namespace.and_then(|ns| cr.name.map(|name| format!("{}/{}", ns, name)))
-        });
-        
-        Self {
-            name,
-            status: pv_status,
-            storage_class,
-            capacity,
-            access_modes,
-            reclaim_policy,
-            claim_ref,
-            volume_mode,
-        }
-    }
-}
-
 /// StorageClass-specific training data
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StorageClassTrainingData {
@@ -1210,7 +1174,7 @@ pub fn from_pv(pv_data: PersistentVolumeTrainingData) -> Self {
         input,
         output,
         metadata: TrainingMetadata {
-            namespace: None, // PV is cluster-scoped
+            namespace: None,
             cluster: None,
             severity: match pv_data.status.as_str() {
                 "Available" | "Bound" => Severity::Normal,
