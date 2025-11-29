@@ -47,6 +47,13 @@ class ModelInteractor:
         # Conversation history
         self.history: List[Dict[str, str]] = []
         
+        # Session stats
+        self.session_start = datetime.now()
+        self.total_tokens_generated = 0
+        self.total_tokens_input = 0
+        self.total_generation_time = 0.0
+        self.message_count = 0
+        
         print(f"✅ Loaded: {self.model_id}")
         print(f"📍 Device: {self.device}")
         if self.is_amd:
@@ -96,6 +103,7 @@ class ModelInteractor:
         
         # Tokenize
         inputs = self.tokenizer(full_prompt, return_tensors="pt")
+        input_length = inputs['input_ids'].shape[1]
         
         # Move to device
         if self.device == "cuda":
@@ -105,21 +113,39 @@ class ModelInteractor:
         gen_config = self._get_generation_config(max_tokens)
         
         try:
+            import time
+            start_time = time.time()
+            
             with torch.no_grad():
                 outputs = self.model.generate(**inputs, **gen_config)
+            
+            generation_time = time.time() - start_time
             
             # Decode
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
+            # Calculate tokens generated
+            output_length = outputs.shape[1]
+            tokens_generated = output_length - input_length
+            
+            # Update stats
+            self.total_tokens_input += input_length
+            self.total_tokens_generated += tokens_generated
+            self.total_generation_time += generation_time
+            self.message_count += 1
+            
             # Strip the prompt from response
             response = response[len(full_prompt):].strip()
             
-            # Store in history
+            # Store in history with stats
             if use_history:
                 self.history.append({
                     "user": prompt,
                     "assistant": response,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "tokens_in": input_length,
+                    "tokens_out": tokens_generated,
+                    "generation_time": generation_time
                 })
             
             return response
@@ -139,6 +165,7 @@ class ModelInteractor:
         print("  /quit or /exit     - Exit chat")
         print("  /clear             - Clear conversation history")
         print("  /history           - Show conversation history")
+        print("  /stats             - Show session statistics")
         print("  /save [filename]   - Save conversation to file")
         print("  /cpu               - Switch to CPU mode (if having GPU issues)")
         print("  /tokens [N]        - Set max response tokens (default 300)")
@@ -164,12 +191,17 @@ class ModelInteractor:
                     arg = cmd_parts[1] if len(cmd_parts) > 1 else None
                     
                     if cmd in ['/quit', '/exit']:
+                        self._print_session_summary()
                         print("\n👋 Goodbye!")
                         break
                     
                     elif cmd == '/clear':
                         self.history.clear()
                         print("🗑️  Conversation history cleared")
+                        continue
+                    
+                    elif cmd == '/stats':
+                        self._print_session_summary()
                         continue
                     
                     elif cmd == '/history':
@@ -182,6 +214,8 @@ class ModelInteractor:
                                 print(f"\n[{i}] {msg.get('timestamp', 'N/A')}")
                                 print(f"You: {msg['user'][:80]}...")
                                 print(f"AI:  {msg['assistant'][:80]}...")
+                                if 'generation_time' in msg:
+                                    print(f"⏱️  {msg['generation_time']:.2f}s | 📊 {msg.get('tokens_out', 0)} tokens")
                             print()
                         continue
                     
@@ -224,9 +258,11 @@ class ModelInteractor:
                 print()
                 
             except KeyboardInterrupt:
+                self._print_session_summary()
                 print("\n\n👋 Goodbye!")
                 break
             except EOFError:
+                self._print_session_summary()
                 print("\n\n👋 Goodbye!")
                 break
             except Exception as e:
