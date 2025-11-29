@@ -8,9 +8,15 @@ import torch
 import pickle
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Optional, List, Dict
 from datetime import datetime
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
+os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
 class ModelInteractor:
     """Interactive chat interface for loaded models"""
@@ -31,6 +37,13 @@ class ModelInteractor:
         # AMD GPU detection
         self.is_amd = 'amd' in str(self.gpu_info.get('gpu_type', '')).lower()
         
+        # Set AMD-specific env vars early
+        if self.is_amd and self.device == "cuda":
+            os.environ['AMD_SERIALIZE_KERNEL'] = '3'
+            os.environ['HIP_VISIBLE_DEVICES'] = '0'
+            # Disable experimental attention warnings
+            os.environ['TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL'] = '0'
+        
         # Conversation history
         self.history: List[Dict[str, str]] = []
         
@@ -50,23 +63,18 @@ class ModelInteractor:
         }
         
         if self.is_amd and self.device == "cuda":
-            # Ultra-conservative for AMD
+            # Ultra-conservative for AMD - don't pass unused params
             config.update({
                 "do_sample": False,
                 "num_beams": 1,
-                "early_stopping": False,
-                "temperature": None,
-                "top_p": None,
             })
-            # Set AMD-specific env vars
-            os.environ['AMD_SERIALIZE_KERNEL'] = '3'
-            os.environ['HIP_VISIBLE_DEVICES'] = '0'
         else:
             # Normal sampling for NVIDIA/CPU
             config.update({
                 "do_sample": True,
                 "temperature": 0.7,
                 "top_p": 0.9,
+                "top_k": 50,
             })
         
         return config
