@@ -282,11 +282,86 @@ class ModelInteractor:
                     f.write(f"[Exchange {i}] {msg.get('timestamp', 'N/A')}\n")
                     f.write(f"You: {msg['user']}\n\n")
                     f.write(f"AI: {msg['assistant']}\n")
+                    
+                    if 'generation_time' in msg:
+                        f.write(f"\n⏱️  Generation time: {msg['generation_time']:.2f}s\n")
+                        f.write(f"📊 Tokens: {msg.get('tokens_in', 0)} in → {msg.get('tokens_out', 0)} out\n")
+                        if msg['generation_time'] > 0:
+                            tokens_per_sec = msg.get('tokens_out', 0) / msg['generation_time']
+                            f.write(f"🚀 Speed: {tokens_per_sec:.1f} tokens/sec\n")
+                    
                     f.write("-" * 60 + "\n\n")
+                
+                # Add session summary
+                f.write("\n" + "=" * 60 + "\n")
+                f.write("SESSION SUMMARY\n")
+                f.write("=" * 60 + "\n")
+                self._write_session_stats(f)
             
             print(f"💾 Conversation saved to {filename}")
         except Exception as e:
             print(f"❌ Failed to save: {e}")
+    
+    def _print_session_summary(self):
+        """Print session statistics summary"""
+        print("\n" + "=" * 60)
+        print("📊 SESSION SUMMARY")
+        print("=" * 60)
+        
+        session_duration = (datetime.now() - self.session_start).total_seconds()
+        
+        print(f"\n⏱️  Session Duration: {self._format_duration(session_duration)}")
+        print(f"💬 Messages Sent: {self.message_count}")
+        print(f"📊 Total Tokens:")
+        print(f"   • Input:  {self.total_tokens_input:,}")
+        print(f"   • Output: {self.total_tokens_generated:,}")
+        print(f"   • Total:  {self.total_tokens_input + self.total_tokens_generated:,}")
+        
+        if self.total_generation_time > 0:
+            avg_time = self.total_generation_time / max(self.message_count, 1)
+            tokens_per_sec = self.total_tokens_generated / self.total_generation_time
+            
+            print(f"\n🚀 Generation Stats:")
+            print(f"   • Total time: {self.total_generation_time:.2f}s")
+            print(f"   • Avg per message: {avg_time:.2f}s")
+            print(f"   • Speed: {tokens_per_sec:.1f} tokens/sec")
+        
+        if self.message_count > 0:
+            avg_tokens_per_msg = self.total_tokens_generated / self.message_count
+            print(f"\n📈 Averages:")
+            print(f"   • {avg_tokens_per_msg:.1f} tokens per response")
+        
+        print(f"\n🖥️  Device: {self.device}")
+        print(f"🤖 Model: {self.model_id}")
+        print("=" * 60)
+    
+    def _write_session_stats(self, file_handle):
+        """Write session stats to file"""
+        session_duration = (datetime.now() - self.session_start).total_seconds()
+        
+        file_handle.write(f"Session Duration: {self._format_duration(session_duration)}\n")
+        file_handle.write(f"Messages: {self.message_count}\n")
+        file_handle.write(f"Total Tokens: {self.total_tokens_input + self.total_tokens_generated:,}\n")
+        file_handle.write(f"  - Input:  {self.total_tokens_input:,}\n")
+        file_handle.write(f"  - Output: {self.total_tokens_generated:,}\n")
+        
+        if self.total_generation_time > 0:
+            tokens_per_sec = self.total_tokens_generated / self.total_generation_time
+            file_handle.write(f"\nGeneration Speed: {tokens_per_sec:.1f} tokens/sec\n")
+            file_handle.write(f"Total Generation Time: {self.total_generation_time:.2f}s\n")
+    
+    def _format_duration(self, seconds: float) -> str:
+        """Format duration in human-readable format"""
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        elif seconds < 3600:
+            mins = int(seconds / 60)
+            secs = int(seconds % 60)
+            return f"{mins}m {secs}s"
+        else:
+            hours = int(seconds / 3600)
+            mins = int((seconds % 3600) / 60)
+            return f"{hours}h {mins}m"
 
 def find_cached_models(models_dir: str = "./models") -> List[Path]:
     """Find all cached model pickle files"""
