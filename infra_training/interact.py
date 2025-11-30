@@ -17,6 +17,7 @@ from datetime import datetime
 warnings.filterwarnings('ignore')
 os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+os.environ['HSA_OVERRIDE_GFX_VERSION'] = '11.0.0'
 
 class ModelInteractor:
     """Interactive chat interface for loaded models"""
@@ -213,7 +214,7 @@ class ModelInteractor:
                             for i, msg in enumerate(self.history, 1):
                                 print(f"\n[{i}] {msg.get('timestamp', 'N/A')}")
                                 print(f"You: {msg['user'][:80]}...")
-                                print(f"AI:  {msg['assistant'][:80]}...")
+                                print(f"kubepilot:  {msg['assistant'][:80]}...")
                                 if 'generation_time' in msg:
                                     print(f"⏱️  {msg['generation_time']:.2f}s | 📊 {msg.get('tokens_out', 0)} tokens")
                             print()
@@ -252,7 +253,7 @@ class ModelInteractor:
                         continue
                 
                 # Generate response
-                print("AI: ", end="", flush=True)
+                print("kubepilot: ", end="", flush=True)
                 response = self.generate_response(user_input, max_tokens, use_history)
                 print(response)
                 print()
@@ -281,7 +282,7 @@ class ModelInteractor:
                 for i, msg in enumerate(self.history, 1):
                     f.write(f"[Exchange {i}] {msg.get('timestamp', 'N/A')}\n")
                     f.write(f"You: {msg['user']}\n\n")
-                    f.write(f"AI: {msg['assistant']}\n")
+                    f.write(f"kubepilot: {msg['assistant']}\n")
                     
                     if 'generation_time' in msg:
                         f.write(f"\n⏱️  Generation time: {msg['generation_time']:.2f}s\n")
