@@ -211,25 +211,29 @@ class ModelInteractor:
         context_parts.append(f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         context_parts.append(f"Working directory: {os.getcwd()}")
         
-        # Available tools
+        # Available tools with better instructions
         if self.enable_commands:
-            tool_info.append("You can execute shell commands using the format: [EXEC: command here]")
-            tool_info.append(f"Allowed commands: {', '.join(self.command_executor.allowed_commands[:10])}...")
+            tool_info.append("TOOL: Execute commands with [EXEC:command] (use ONCE per command)")
+            tool_info.append(f"Available: {', '.join(self.command_executor.allowed_commands[:8])}")
         
         if self.enable_files:
-            tool_info.append("You can read files using: [READ: filepath]")
-            tool_info.append("You can list files using: [LIST: directory pattern]")
+            tool_info.append("TOOL: Read files with [READ:filepath]")
+            tool_info.append("TOOL: List files with [LIST:dir pattern]")
         
         system_context = "\n".join(context_parts)
         tools_context = "\n".join(tool_info) if tool_info else ""
         
-        enhanced_prompt = f"""System Context:
-{system_context}
+        # More direct prompt format
+        enhanced_prompt = f"""You are a helpful SRE assistant. Think step-by-step and be concise.
 
-Available Tools:
 {tools_context}
 
-User Query: {user_prompt}
+Context: {system_context}
+
+Query: {user_prompt}
+
+Think about what command to run, execute it ONCE with [EXEC:command], then analyze the output.
+Keep your response under 100 words unless showing command output.
 
 Response:"""
         
@@ -240,24 +244,44 @@ Response:"""
         if not self.enable_commands:
             return text
         
-        # Look for [EXEC: ...] patterns
+        # Look for [EXEC: ...] or [EXEC:...] patterns (more flexible)
         import re
-        exec_pattern = r'\[EXEC:\s*([^\]]+)\]'
+        exec_pattern = r'\[EXEC:\s*([^\]]+?)\]'
         
-        def execute_and_replace(match):
-            command = match.group(1).strip()
+        # Find all unique commands (deduplicate)
+        commands_found = re.findall(exec_pattern, text)
+        unique_commands = []
+        seen = set()
+        for cmd in commands_found:
+            cmd_clean = cmd.strip()
+            if cmd_clean not in seen:
+                unique_commands.append(cmd_clean)
+                seen.add(cmd_clean)
+        
+        # Execute each unique command once
+        results = {}
+        for command in unique_commands:
             print(f"\n🔧 Executing: {command}")
             result = self.command_executor.execute(command)
             
             if result['success']:
                 output = result['stdout'].strip()
-                if len(output) > 1000:
-                    output = output[:1000] + "\n... (truncated)"
-                return f"\n```\n$ {command}\n{output}\n```\n"
+                if len(output) > 1500:
+                    output = output[:1500] + "\n... (truncated)"
+                results[command] = f"\n```bash\n$ {command}\n{output}\n```\n"
             else:
-                return f"\n```\nError executing '{command}': {result.get('stderr', 'Unknown error')}\n```\n"
+                stderr = result.get('stderr', 'Unknown error')
+                # Truncate long error messages
+                if len(stderr) > 500:
+                    stderr = stderr[:500] + "..."
+                results[command] = f"\n```bash\n$ {command}\nError: {stderr}\n```\n"
         
-        return re.sub(exec_pattern, execute_and_replace, text)
+        # Replace all occurrences with results
+        def replace_exec(match):
+            cmd = match.group(1).strip()
+            return results.get(cmd, f"[Command: {cmd}]")
+        
+        return re.sub(exec_pattern, replace_exec, text)
     
     def _process_file_reads(self, text: str) -> str:
         """Process any file read requests"""
@@ -306,7 +330,7 @@ Response:"""
         
         return text
     
-    def _get_generation_config(self, max_tokens: int = 500) -> Dict:
+    def _get_generation_config(self, max_tokens: int = 300) -> Dict:
         """Get generation config based on hardware"""
         config = {
             "max_new_tokens": max_tokens,
@@ -326,11 +350,12 @@ Response:"""
                 "temperature": 0.7,
                 "top_p": 0.9,
                 "top_k": 50,
+                "repetition_penalty": 1.2,  # Reduce repetition
             })
         
         return config
     
-    def generate_response(self, prompt: str, max_tokens: int = 500, use_history: bool = True) -> str:
+    def generate_response(self, prompt: str, max_tokens: int = 300, use_history: bool = True) -> str:
         """Generate response from model with context injection"""
         
         # Inject context and tools
@@ -338,17 +363,21 @@ Response:"""
         
         # Build prompt with history if enabled
         if use_history and self.history:
-            context_parts = [sys_context]
-            for msg in self.history[-4:]:  # Last 2 exchanges
+            context_parts = []
+            for msg in self.history[-3:]:  # Last 3 exchanges only
                 context_parts.append(f"User: {msg['user']}")
-                context_parts.append(f"Assistant: {msg['assistant']}")
-            context_parts.append(f"User: {prompt}")
-            full_prompt = "\n".join(context_parts)
+                # Truncate long assistant responses in history
+                resp = msg['assistant']
+                if len(resp) > 200:
+                    resp = resp[:200] + "..."
+                context_parts.append(f"Assistant: {resp}")
+            context_parts.append(enhanced_prompt)
+            full_prompt = "\n\n".join(context_parts)
         else:
             full_prompt = enhanced_prompt
         
-        # Tokenize
-        inputs = self.tokenizer(full_prompt, return_tensors="pt", truncation=True, max_length=2048)
+        # Tokenize with truncation
+        inputs = self.tokenizer(full_prompt, return_tensors="pt", truncation=True, max_length=1500)
         input_length = inputs['input_ids'].shape[1]
         
         # Move to device
@@ -382,6 +411,11 @@ Response:"""
             
             # Strip the prompt from response
             response = response[len(full_prompt):].strip()
+            
+            # Stop at natural breakpoints to reduce rambling
+            for stop in ['\n\nUser:', '\n\n---', '\n\nQ:', 'In summary']:
+                if stop in response:
+                    response = response[:response.index(stop)]
             
             # Process any embedded commands or file reads
             response = self._process_commands(response)
@@ -433,7 +467,7 @@ Response:"""
         print()
         
         use_history = True
-        max_tokens = 500
+        max_tokens = 300
         
         while True:
             try:
