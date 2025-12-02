@@ -223,19 +223,22 @@ class ModelInteractor:
         system_context = "\n".join(context_parts)
         tools_context = "\n".join(tool_info) if tool_info else ""
         
-        # More direct prompt format
-        enhanced_prompt = f"""You are a helpful SRE assistant. Think step-by-step and be concise.
+        # More direct prompt format with examples
+        enhanced_prompt = f"""You are a helpful SRE assistant with command execution abilities.
 
 {tools_context}
 
 Context: {system_context}
 
-Query: {user_prompt}
+IMPORTANT: To execute commands, use EXACTLY this format: [EXEC:command]
+Example: [EXEC:kubectl get pods]
+Example: [EXEC:kubectl cluster-info]
 
-Think about what command to run, execute it ONCE with [EXEC:command], then analyze the output.
-Keep your response under 100 words unless showing command output.
+User asks: {user_prompt}
 
-Response:"""
+First write [EXEC:your-command], then after execution, explain the results briefly.
+
+Your response:"""
         
         return enhanced_prompt, system_context
     
@@ -244,12 +247,18 @@ Response:"""
         if not self.enable_commands:
             return text
         
-        # Look for [EXEC: ...] or [EXEC:...] patterns (more flexible)
         import re
+        
+        # Look for [EXEC:...] patterns (primary format)
         exec_pattern = r'\[EXEC:\s*([^\]]+?)\]'
         
-        # Find all unique commands (deduplicate)
+        # Also look for plain "EXEC: command" without brackets (fallback)
+        plain_exec_pattern = r'(?:^|\n)EXEC:\s*([^\n]+)'
+        
+        # Find all unique commands from both patterns
         commands_found = re.findall(exec_pattern, text)
+        commands_found.extend(re.findall(plain_exec_pattern, text))
+        
         unique_commands = []
         seen = set()
         for cmd in commands_found:
@@ -281,7 +290,11 @@ Response:"""
             cmd = match.group(1).strip()
             return results.get(cmd, f"[Command: {cmd}]")
         
-        return re.sub(exec_pattern, replace_exec, text)
+        # Replace both patterns
+        text = re.sub(exec_pattern, replace_exec, text)
+        text = re.sub(plain_exec_pattern, replace_exec, text)
+        
+        return text
     
     def _process_file_reads(self, text: str) -> str:
         """Process any file read requests"""
