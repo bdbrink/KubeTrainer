@@ -224,19 +224,19 @@ class ModelInteractor:
         tools_context = "\n".join(tool_info) if tool_info else ""
         
         # More direct prompt format with examples
-        enhanced_prompt = f"""You are a helpful SRE assistant with command execution abilities.
+        enhanced_prompt = f"""You are an SRE assistant. Execute commands and analyze ONLY the actual output shown.
 
 {tools_context}
 
 Context: {system_context}
 
-IMPORTANT: To execute commands, use EXACTLY this format: [EXEC:command]
-Example: [EXEC:kubectl get pods]
-Example: [EXEC:kubectl cluster-info]
-
 User asks: {user_prompt}
 
-First write [EXEC:your-command], then after execution, explain the results briefly.
+Instructions:
+1. Write [EXEC:command] to run the command
+2. Wait for the actual output to appear
+3. Analyze ONLY what you see in the output - do NOT make up example data
+4. Be brief (2-3 sentences max)
 
 Your response:"""
         
@@ -360,10 +360,10 @@ Your response:"""
         else:
             config.update({
                 "do_sample": True,
-                "temperature": 0.7,
-                "top_p": 0.9,
-                "top_k": 50,
-                "repetition_penalty": 1.2,  # Reduce repetition
+                "temperature": 0.5,  # Lower temp = less creative/hallucination
+                "top_p": 0.85,        # Tighter sampling
+                "top_k": 40,
+                "repetition_penalty": 1.3,  # Stronger penalty
             })
         
         return config
@@ -377,27 +377,27 @@ Your response:"""
         # Build prompt with history if enabled
         if use_history and self.history:
             context_parts = []
-            for msg in self.history[-3:]:  # Last 3 exchanges only
+            for msg in self.history[-2:]:  # Only last 2 exchanges
                 context_parts.append(f"User: {msg['user']}")
                 # Truncate long assistant responses in history
                 resp = msg['assistant']
-                if len(resp) > 200:
-                    resp = resp[:200] + "..."
+                if len(resp) > 150:
+                    resp = resp[:150] + "..."
                 context_parts.append(f"Assistant: {resp}")
             context_parts.append(enhanced_prompt)
             full_prompt = "\n\n".join(context_parts)
         else:
             full_prompt = enhanced_prompt
         
-        # Tokenize with truncation
-        inputs = self.tokenizer(full_prompt, return_tensors="pt", truncation=True, max_length=1500)
+        # Tokenize with aggressive truncation
+        inputs = self.tokenizer(full_prompt, return_tensors="pt", truncation=True, max_length=1200)
         input_length = inputs['input_ids'].shape[1]
         
         # Move to device
         if self.device == "cuda":
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
         
-        # Generate
+        # Generate with stricter settings
         gen_config = self._get_generation_config(max_tokens)
         
         try:
@@ -425,14 +425,35 @@ Your response:"""
             # Strip the prompt from response
             response = response[len(full_prompt):].strip()
             
-            # Stop at natural breakpoints to reduce rambling
-            for stop in ['\n\nUser:', '\n\n---', '\n\nQ:', 'In summary']:
-                if stop in response:
-                    response = response[:response.index(stop)]
-            
-            # Process any embedded commands or file reads
+            # FIRST: Process embedded commands to inject real output
             response = self._process_commands(response)
             response = self._process_file_reads(response)
+            
+            # THEN: Aggressively stop at repetition/hallucination markers
+            stop_markers = [
+                '\n\nUser:', '\n\n---', '\n\nQ:', 'In summary',
+                '\nHere is', '\nFor example', '\nThis output shows',
+                '```\n```',  # Double code blocks = hallucination
+                'The output from',  # Often precedes made-up examples
+            ]
+            
+            earliest_stop = len(response)
+            for marker in stop_markers:
+                idx = response.find(marker)
+                if idx > 50 and idx < earliest_stop:  # Must be after first 50 chars
+                    earliest_stop = idx
+            
+            response = response[:earliest_stop].strip()
+            
+            # Remove duplicate consecutive lines (repetition detection)
+            lines = response.split('\n')
+            deduped = []
+            prev_line = None
+            for line in lines:
+                if line.strip() != prev_line:
+                    deduped.append(line)
+                    prev_line = line.strip()
+            response = '\n'.join(deduped)
             
             # Store in history
             if use_history:
