@@ -318,17 +318,301 @@ Current context:
         """Extract tool calls from model output"""
         tools = []
         
-        # [EXEC: command]
-        for match in re.finditer(r'\[EXEC:\s*([^\]]+)\]', text):
-            tools.append(ToolCall(ToolType.EXEC, match.group(1).strip()))
+        # Match tool patterns - both [TOOL: arg] and plain TOOL: arg formats
+        patterns = [
+            (r'\[EXEC:\s*([^\]]+)\]', ToolType.EXEC),
+            (r'\[READ:\s*([^\]]+)\]', ToolType.READ),
+            (r'\[LIST:\s*([^\]]+)\]', ToolType.LIST),
+            # Also catch plain format without brackets (model sometimes does this)
+            (r'(?:^|\n)EXEC:\s*([^\n]+)', ToolType.EXEC),
+            (r'(?:^|\n)READ:\s*([^\n]+)', ToolType.READ),
+            (r'(?:^|\n)LIST:\s*([^\n]+)', ToolType.LIST),
+        ]
         
-        # [READ: filepath]
-        for match in re.finditer(r'\[READ:\s*([^\]]+)\]', text):
-            tools.append(ToolCall(ToolType.READ, match.group(1).strip()))
+        seen = set()  # Avoid duplicates
         
-        # [LIST: dir pattern]
-        for match in re.finditer(r'\[LIST:\s*([^\]]+)\]', text):
-            tools.append(ToolCall(ToolType.LIST, match.group(1).strip()))
+        for pattern, tool_type in patterns:
+            for match in re.finditer(pattern, text, re.MULTILINE):
+                arg = match.group(1).strip()
+                # Remove any trailing punctuation/noise
+                arg = re.sub(r'[`\'"]+
+    
+    def _execute_tool(self, tool: ToolCall) -> str:
+        """Execute a tool and return formatted result"""
+        
+        if tool.tool_type == ToolType.EXEC:
+            result = self.executor.execute(tool.arguments)
+            if result['success']:
+                output = result['stdout'][:2000]  # Truncate long output
+                return f"\n```bash\n$ {tool.arguments}\n{output}\n```\n"
+            else:
+                error = result['stderr'][:500]
+                return f"\n```bash\n$ {tool.arguments}\n❌ Error: {error}\n```\n"
+        
+        elif tool.tool_type == ToolType.READ:
+            content = self.code_context.read_file(tool.arguments)
+            if content and not content.startswith('['):
+                # Detect language for syntax highlighting
+                ext = Path(tool.arguments).suffix
+                lang_map = {'.py': 'python', '.js': 'javascript', '.yaml': 'yaml', 
+                           '.json': 'json', '.sh': 'bash', '.md': 'markdown'}
+                lang = lang_map.get(ext, 'text')
+                
+                content = content[:2000]  # Truncate
+                return f"\n```{lang}\n# {tool.arguments}\n{content}\n```\n"
+            else:
+                return f"\n❌ Could not read: {tool.arguments}\n"
+        
+        elif tool.tool_type == ToolType.LIST:
+            parts = tool.arguments.split(maxsplit=1)
+            directory = parts[0] if parts else "."
+            pattern = parts[1] if len(parts) > 1 else "*"
+            
+            # Handle patterns like "./*.txt" -> directory=".", pattern="*.txt"
+            if '/' in directory:
+                path_parts = directory.rsplit('/', 1)
+                directory = path_parts[0] or '.'
+                pattern = path_parts[1] if path_parts[1] else pattern
+            
+            files = self.code_context.list_files(directory, pattern)
+            if files:
+                file_list = "\n".join(f"  • {f}" for f in files[:30])
+                if len(files) > 30:
+                    file_list += f"\n  ... and {len(files) - 30} more"
+                return f"\n**Files matching {directory}/{pattern}:**\n{file_list}\n"
+            else:
+                return f"\n❌ No files found: {directory}/{pattern}\n"
+        
+        return ""
+    
+    def chat(self, user_input: str, stream: bool = True) -> str:
+        """Process user input and generate response with streaming"""
+        
+        # Add to history
+        self.messages.append({"role": "user", "content": user_input})
+        
+        # Build prompt
+        prompt = self._format_messages_for_model(user_input)
+        
+        # Tokenize
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
+        if self.device == "cuda":
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        
+        # Generate with streaming
+        response_parts = []
+        
+        if stream and RICH_AVAILABLE:
+            # Rich streaming display
+            with Live("", console=self.console, refresh_per_second=10) as live:
+                for chunk in self.streamer.generate_stream(inputs, max_tokens=512):
+                    response_parts.append(chunk)
+                    current_text = "".join(response_parts)
+                    
+                    # Render markdown in real-time
+                    try:
+                        md = Markdown(current_text)
+                        live.update(md)
+                    except:
+                        live.update(current_text)
+        else:
+            # Non-streaming fallback
+            for chunk in self.streamer.generate_stream(inputs, max_tokens=512):
+                response_parts.append(chunk)
+                if not stream:
+                    print(chunk, end="", flush=True)
+        
+        response = "".join(response_parts).strip()
+        
+        # Process tool calls
+        tool_calls = self._extract_tool_calls(response)
+        
+        if tool_calls:
+            if RICH_AVAILABLE:
+                self.console.print("\n[dim]Executing tools...[/dim]")
+            else:
+                print("\n🔧 Executing tools...")
+            
+            # Execute tools and inject results
+            for tool in tool_calls:
+                if RICH_AVAILABLE:
+                    self.console.print(f"[cyan]→ {tool.tool_type.value}: {tool.arguments}[/cyan]")
+                else:
+                    print(f"→ {tool.tool_type.value}: {tool.arguments}")
+                
+                tool_result = self._execute_tool(tool)
+                
+                # Replace tool call with result in response
+                # Handle both bracketed and plain formats
+                patterns_to_replace = [
+                    re.escape(f"[{tool.tool_type.value.upper()}: {tool.arguments}]"),
+                    re.escape(f"[{tool.tool_type.value.upper()}:{tool.arguments}]"),  # No space
+                    re.escape(f"{tool.tool_type.value.upper()}: {tool.arguments}"),
+                    re.escape(f"{tool.tool_type.value.upper()}:{tool.arguments}"),
+                ]
+                
+                for pattern in patterns_to_replace:
+                    response = re.sub(pattern, tool_result, response, flags=re.IGNORECASE)
+        
+        # Add to history
+        self.messages.append({"role": "assistant", "content": response})
+        
+        # Trim history if too long
+        if len(self.messages) > self.max_history * 2:
+            self.messages = self.messages[-(self.max_history * 2):]
+        
+        return response
+    
+    def run_interactive(self):
+        """Run interactive chat loop"""
+        
+        if RICH_AVAILABLE:
+            self.console.print(Panel.fit(
+                "[bold cyan]SRE AI Assistant[/bold cyan]\n"
+                "Commands: /help, /clear, /quit, /exec <cmd>, /read <file>",
+                border_style="cyan"
+            ))
+        else:
+            print("=" * 60)
+            print("SRE AI Assistant")
+            print("Commands: /help, /clear, /quit, /exec <cmd>, /read <file>")
+            print("=" * 60)
+        
+        while True:
+            try:
+                # Get input
+                if RICH_AVAILABLE:
+                    user_input = self.console.input("\n[bold green]You:[/bold green] ").strip()
+                else:
+                    user_input = input("\nYou: ").strip()
+                
+                if not user_input:
+                    continue
+                
+                # Handle commands
+                if user_input.startswith('/'):
+                    if user_input in ['/quit', '/exit', '/q']:
+                        break
+                    
+                    elif user_input == '/clear':
+                        self.messages = []
+                        if RICH_AVAILABLE:
+                            self.console.clear()
+                        print("🗑️  Cleared history")
+                        continue
+                    
+                    elif user_input == '/help':
+                        help_text = """
+**Commands:**
+• `/quit` - Exit
+• `/clear` - Clear history  
+• `/exec <command>` - Run command directly
+• `/read <file>` - Read file directly
+
+**Usage:**
+Just chat naturally! The assistant will use tools when needed.
+Examples:
+• "Show me all pods in the default namespace"
+• "Read the config.yaml file"
+• "What's the CPU usage?"
+"""
+                        if RICH_AVAILABLE:
+                            self.console.print(Markdown(help_text))
+                        else:
+                            print(help_text)
+                        continue
+                    
+                    elif user_input.startswith('/exec '):
+                        cmd = user_input[6:]
+                        result = self.executor.execute(cmd)
+                        if result['success']:
+                            print(f"```\n{result['stdout']}\n```")
+                        else:
+                            print(f"Error: {result['stderr']}")
+                        continue
+                    
+                    elif user_input.startswith('/read '):
+                        filepath = user_input[6:]
+                        content = self.code_context.read_file(filepath)
+                        if content:
+                            print(f"```\n{content}\n```")
+                        else:
+                            print(f"❌ Could not read {filepath}")
+                        continue
+                
+                # Generate response
+                if RICH_AVAILABLE:
+                    self.console.print("\n[bold cyan]Assistant:[/bold cyan]", end=" ")
+                else:
+                    print("\nAssistant: ", end="")
+                
+                response = self.chat(user_input, stream=True)
+                
+                # Display final response if not already shown via streaming
+                if not RICH_AVAILABLE or not response:
+                    print(response)
+                
+            except KeyboardInterrupt:
+                print("\n\n👋 Goodbye!")
+                break
+            except EOFError:
+                print("\n\n👋 Goodbye!")
+                break
+            except Exception as e:
+                print(f"\n❌ Error: {e}")
+                import traceback
+                traceback.print_exc()
+
+def main():
+    """Entry point"""
+    
+    # Find models
+    models_dir = Path("./models")
+    pkl_files = []
+    
+    if models_dir.exists():
+        pkl_files = list(models_dir.glob("*/model_info.pkl"))
+        root_pkl = models_dir / "model_info.pkl"
+        if root_pkl.exists():
+            pkl_files.append(root_pkl)
+    
+    if not pkl_files:
+        print("❌ No cached models found")
+        print("💡 Run your training script first")
+        return
+    
+    # Select model
+    if len(pkl_files) == 1:
+        model_path = pkl_files[0]
+    else:
+        print("\n📦 Available models:\n")
+        for i, p in enumerate(pkl_files, 1):
+            print(f"  {i}. {p.parent.name}")
+        
+        choice = input(f"\nSelect (1-{len(pkl_files)}): ").strip()
+        if not choice.isdigit() or int(choice) < 1 or int(choice) > len(pkl_files):
+            print("❌ Invalid choice")
+            return
+        
+        model_path = pkl_files[int(choice) - 1]
+    
+    # Run
+    try:
+        interactor = SmartModelInteractor(str(model_path))
+        interactor.run_interactive()
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    main()
+, '', arg)
+                
+                key = (tool_type, arg)
+                if key not in seen:
+                    tools.append(ToolCall(tool_type, arg))
+                    seen.add(key)
         
         return tools
     
