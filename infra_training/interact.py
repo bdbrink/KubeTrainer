@@ -221,6 +221,29 @@ class ModelInteractor:
             print("📁 File access: ENABLED")
         print()
     
+    def _ask_permission(self, command: str) -> bool:
+        """Ask user for permission to run command"""
+        if self.auto_approve:
+            return True
+        
+        print(f"\n🤖 Model wants to run: {command}")
+        while True:
+            try:
+                response = input("   Allow? [y/n/always]: ").strip().lower()
+                if response in ['y', 'yes']:
+                    return True
+                elif response in ['n', 'no']:
+                    return False
+                elif response in ['a', 'always']:
+                    self.auto_approve = True
+                    print("   ✅ Auto-approve enabled for this session")
+                    return True
+                else:
+                    print("   Please enter y, n, or always")
+            except (KeyboardInterrupt, EOFError):
+                print("\n   ⛔ Denied")
+                return False
+    
     def _inject_context(self, user_prompt: str) -> Tuple[str, str]:
         """Inject system context and available tools into prompt"""
         context_parts = []
