@@ -75,8 +75,6 @@ RUN if [ -f infra_training/requirements.txt ]; then \
 # Copy app code
 ################################################################
 COPY infra_training/ /app/infra_training
-# Optional: copy other repo-level files your scripts expect
-COPY README.md /app/README.md
 
 # Expose model assets+data directories as volumes (created on container start)
 ENV MODELS_DIR=/data/models
@@ -92,7 +90,7 @@ WORKDIR /app
 ################################################################
 # Entrypoint script (we'll add it below as an actual file)
 ################################################################
-COPY infra_training/entrypoint.sh /app/entrypoint.sh
+COPY /entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Expose port for serving/inference (if infra_training serves models)
