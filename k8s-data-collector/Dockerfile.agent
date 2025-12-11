@@ -1,0 +1,75 @@
+# Dockerfile.agent
+# Multi-stage build: compile Rust binaries, produce minimal runtime image
+
+################################################################
+# 1) Builder stage
+################################################################
+FROM rust:1.72-bookworm AS builder
+WORKDIR /workspace
+
+# Install system deps if your rust binaries need linux libs for GPU or k8s
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copy Cargo manifests first for caching
+# Adjust paths if your Cargo.toml modules live in subfolders
+COPY Cargo.toml Cargo.lock ./
+# If you have workspace members, copy them:
+# COPY k8s-data-collector/Cargo.toml k8s-data-collector/Cargo.toml
+# COPY gpu-detect/Cargo.toml gpu-detect/Cargo.toml
+
+# Create an empty src for incremental build optimization
+RUN mkdir -p src
+
+# Build dependencies (this speeds repeated builds)
+RUN echo "fn main() {}" > src/main.rs
+RUN cargo build --release || true
+
+# Now copy full source
+# Adjust to the correct directories in your repo
+COPY ./gpu-detect ./gpu-detect
+COPY ./k8s-data-collector ./k8s-data-collector
+COPY ./common_lib ./common_lib || true
+
+# Build both binaries
+WORKDIR /workspace/gpu-detect
+RUN cargo build --release -p gpu-detect
+
+WORKDIR /workspace/k8s-data-collector
+RUN cargo build --release -p k8s-data-collector
+
+################################################################
+# 2) Runtime stage - small distro
+################################################################
+FROM debian:bookworm-slim AS runtime
+# Add minimal runtime deps (glibc, certs). If you use Alpine musl, ensure binaries are built against musl.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+ARG AGENT_USER=kubetrainer
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
+RUN groupadd -g ${AGENT_GID} ${AGENT_USER} \
+ && useradd -m -u ${AGENT_UID} -g ${AGENT_GID} ${AGENT_USER}
+
+WORKDIR /opt/kubetrainer
+# Copy built binaries from builder
+COPY --from=builder /workspace/gpu-detect/target/release/gpu-detect ./gpu-detect
+COPY --from=builder /workspace/k8s-data-collector/target/release/k8s-data-collector ./k8s-data-collector
+
+# Provide an entrypoint that can run either binary or both
+COPY docker/agent-entrypoint.sh /opt/kubetrainer/agent-entrypoint.sh
+RUN chmod +x /opt/kubetrainer/agent-entrypoint.sh \
+ && chown -R ${AGENT_USER}:${AGENT_USER} /opt/kubetrainer
+
+USER ${AGENT_USER}
+ENV PATH="/opt/kubetrainer:${PATH}"
+EXPOSE 8080
+
+ENTRYPOINT ["/opt/kubetrainer/agent-entrypoint.sh"]
+CMD ["--help"]
