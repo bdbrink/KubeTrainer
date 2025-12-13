@@ -1,0 +1,44 @@
+# Dockerfile.wrapper
+FROM rust:1.72-bookworm AS builder
+WORKDIR /workspace
+
+# system deps if needed
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# copy workspace manifests for caching
+COPY Cargo.toml Cargo.lock ./
+# empty main for deps
+RUN mkdir -p src && echo "fn main() { println!(\"build deps\"); }" > src/main.rs
+RUN cargo build --release || true
+
+# copy actual source
+COPY ./wrapper /workspace/wrapper
+
+WORKDIR /workspace/wrapper
+RUN cargo build --release --bin kubetrainer-wrapper
+
+# runtime image
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG RUN_USER=kubetrainer
+ARG RUN_UID=1000
+ARG RUN_GID=1000
+RUN groupadd -g ${RUN_GID} ${RUN_USER} \
+ && useradd -m -u ${RUN_UID} -g ${RUN_GID} ${RUN_USER}
+
+WORKDIR /opt/kubetrainer
+COPY --from=builder /workspace/wrapper/target/release/kubetrainer-wrapper ./kubetrainer-wrapper
+
+RUN chown ${RUN_USER}:${RUN_USER} /opt/kubetrainer/kubetrainer-wrapper
+USER ${RUN_USER}
+
+ENV KUBERNETES_SERVICE_ACCOUNT=${KUBERNETES_SERVICE_ACCOUNT:-kubetrainer}
+ENTRYPOINT ["./kubetrainer-wrapper"]
+CMD ["--log-level","info"]
